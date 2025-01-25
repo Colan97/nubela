@@ -1,0 +1,7 @@
+streamlit
+pandas
+nest_asyncio
+aiohttp
+orjson
+beautifulsoup4
+lxml
