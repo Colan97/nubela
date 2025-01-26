@@ -637,7 +637,7 @@ async def discover_links(url: str, session: aiohttp.ClientSession, user_agent: s
 # -----------------------------
 # Helper: Process URLs in Non-BFS Mode (Chunked)
 # -----------------------------
-async def process_urls_chunked(urls: List[str], checker: URLChecker], show_partial_callback=None) -> List[Dict]:
+async def process_urls_chunked(urls: List[str], checker: URLChecker, show_partial_callback=None) -> List[Dict]:
     results = []
     total = len(urls)
     chunks = [urls[i : i + DEFAULT_CHUNK_SIZE] for i in range(0, total, DEFAULT_CHUNK_SIZE)]
