@@ -691,7 +691,7 @@ def main():
     st.write("Check technical/SEO elements of URLs, optionally crawl up to 3 levels deep.")
 
     # --- Concurrency Slider ---
-    concurrency = st.slider("Max Concurrent Requests", min_value=1, max_value=200, value=10)
+    concurrency = st.slider("URL Speed /s", min_value=1, max_value=200, value=10)
 
     # --- User-Agent Dropdown + Custom Input ---
     ua_options = list(USER_AGENTS.keys()) + ["Custom"]
