@@ -741,7 +741,7 @@ def main():
     st.write(f"Total URLs (after dedup & cap at 25k): {len(final_list)}")
 
     # --- BFS Option ---
-    do_bfs = st.checkbox("Crawl internal links (depth=3)?")
+    do_bfs = st.checkbox("Crawl Depth - 3)")
     bfs_seed_url = ""
     if do_bfs:
         bfs_seed_url = st.text_input("Enter a single Seed URL for BFS (we'll ignore robots.txt for crawling):")
