@@ -8,6 +8,7 @@ import orjson
 import gc
 import logging
 import requests
+import threading
 from datetime import datetime
 from typing import List, Dict, Tuple, Set, Optional
 from collections import deque
@@ -269,9 +270,10 @@ def main():
         st.session_state.crawling = True
         st.session_state.results = pd.DataFrame()
         
-        from streamlit.runtime.scriptrunner import add_script_thread_runner
-        
         def run_async():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
             async def wrapper():
                 checker = URLChecker(
                     user_agent=USER_AGENTS[user_agent],
@@ -316,9 +318,9 @@ def main():
                     await checker.close()
                     st.session_state.crawling = False
             
-            asyncio.run(wrapper())
+            loop.run_until_complete(wrapper())
         
-        add_script_thread_runner(run_async)
+        threading.Thread(target=run_async, daemon=True).start()
 
     # Results Display
     st.header("Results")
