@@ -2,13 +2,11 @@ import streamlit as st
 import pandas as pd
 import re
 import asyncio
-import nest_asyncio
 import aiohttp
 import orjson
 import gc
 import logging
 import requests
-import threading
 from datetime import datetime
 from typing import List, Dict, Tuple, Set, Optional
 from collections import deque
@@ -17,8 +15,6 @@ from urllib.parse import urlparse, urljoin
 from bs4 import BeautifulSoup
 from tenacity import retry, stop_after_attempt, wait_exponential
 import xml.etree.ElementTree as ET
-
-nest_asyncio.apply()
 
 # --------------------------
 # Constants
@@ -75,7 +71,7 @@ class URLChecker:
                         self.robots_cache[base_url] = await resp.text()
                     else:
                         self.robots_cache[base_url] = None
-            except:
+            except Exception as e:
                 self.robots_cache[base_url] = None
         
         robots_content = self.robots_cache.get(base_url)
@@ -107,16 +103,26 @@ class URLChecker:
         async with self.semaphore:
             try:
                 is_allowed, block_rule = await self.check_robots_txt(url)
-                async with self.session.get(url, headers=headers, ssl=False, allow_redirects=False) as resp:
+                final_url = url
+                
+                # Handle redirects
+                for _ in range(MAX_REDIRECTS):
+                    async with self.session.get(
+                        final_url, 
+                        headers=headers, 
+                        ssl=False, 
+                        allow_redirects=False
+                    ) as resp:
+                        if 300 <= resp.status < 400:
+                            location = resp.headers.get('Location')
+                            if location:
+                                final_url = urljoin(final_url, location)
+                                continue
+                        break
+                
+                async with self.session.get(final_url, headers=headers, ssl=False) as resp:
                     status = resp.status
-                    final_url = str(resp.url)
                     content_type = resp.headers.get('Content-Type', '')
-                    
-                    # Handle redirects
-                    if status in (301, 302, 307, 308):
-                        location = resp.headers.get('Location')
-                        if location:
-                            final_url = urljoin(url, location)
                     
                     # Parse HTML content
                     html = ""
@@ -143,7 +149,7 @@ class URLChecker:
             except Exception as e:
                 return {
                     "URL": url,
-                    "Error": str(e),
+                    "Error": f"{type(e).__name__}: {str(e)}",
                     "Timestamp": datetime.now().isoformat()
                 }
 
@@ -177,7 +183,7 @@ async def discover_links(parent_url: str, session: aiohttp.ClientSession, user_a
                     if is_valid_scope(absolute_url, parent_url, scope):
                         links.add(absolute_url)
                 return list(links)
-    except:
+    except Exception as e:
         return []
 
 # --------------------------
@@ -216,6 +222,7 @@ def main():
 
     # Input Section
     st.header("Input Configuration")
+    urls = []
     
     if crawl_mode == "Website Crawl":
         col1, col2 = st.columns([3, 1])
@@ -225,7 +232,6 @@ def main():
             if use_sitemap:
                 sitemap_url = st.text_input("Sitemap URL")
         
-        urls = []
         if seed_url:
             urls = [seed_url.strip()]
             if use_sitemap and sitemap_url:
@@ -234,12 +240,11 @@ def main():
                     if resp.status_code == 200:
                         root = ET.fromstring(resp.content)
                         urls += [loc.text.strip() for loc in root.findall(".//{*}loc")]
-                except:
-                    st.error("Failed to fetch sitemap")
+                except Exception as e:
+                    st.error(f"Failed to fetch sitemap: {str(e)}")
         
     else:
         input_method = st.radio("Input method", ["Direct Input", "File Upload", "Sitemap"], index=0)
-        urls = []
         
         if input_method == "Direct Input":
             url_input = st.text_area("Enter URLs (one per line)")
@@ -258,8 +263,8 @@ def main():
                         root = ET.fromstring(resp.content)
                         urls = [loc.text.strip() for loc in root.findall(".//{*}loc")]
                         st.success(f"Found {len(urls)} URLs in sitemap")
-                except:
-                    st.error("Failed to fetch sitemap")
+                except Exception as e:
+                    st.error(f"Failed to fetch sitemap: {str(e)}")
 
     # Deduplication
     seen = set()
@@ -270,57 +275,55 @@ def main():
         st.session_state.crawling = True
         st.session_state.results = pd.DataFrame()
         
-        def run_async():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+        async def process_urls():
+            checker = URLChecker(
+                user_agent=USER_AGENTS[user_agent],
+                follow_robots=follow_robots,
+                concurrency=concurrency
+            )
             
-            async def wrapper():
-                checker = URLChecker(
-                    user_agent=USER_AGENTS[user_agent],
-                    follow_robots=follow_robots,
-                    concurrency=concurrency
-                )
+            try:
+                await checker.setup()
                 
-                try:
-                    await checker.setup()
+                if crawl_mode == "Website Crawl":
+                    visited = set()
+                    queue = deque([(url, 0) for url in final_urls])
                     
-                    if crawl_mode == "Website Crawl":
-                        visited = set()
-                        queue = deque([(url, 0) for url in final_urls])
+                    while queue and len(visited) < DEFAULT_MAX_URLS:
+                        current_url, depth = queue.popleft()
+                        if current_url in visited:
+                            continue
+                        visited.add(current_url)
                         
-                        while queue and len(visited) < DEFAULT_MAX_URLS:
-                            current_url, depth = queue.popleft()
-                            if current_url in visited:
-                                continue
-                            visited.add(current_url)
-                            
-                            result = await checker.fetch_and_parse(current_url)
-                            new_row = pd.DataFrame([result])
-                            st.session_state.results = pd.concat([st.session_state.results, new_row], ignore_index=True)
-                            
-                            if depth < max_depth:
-                                links = await discover_links(
-                                    current_url, 
-                                    checker.session, 
-                                    checker.user_agent, 
-                                    crawl_scope
-                                )
-                                for link in links:
-                                    if link not in visited:
-                                        queue.append((link, depth + 1))
-                    else:
-                        for url in final_urls:
-                            result = await checker.fetch_and_parse(url)
-                            new_row = pd.DataFrame([result])
-                            st.session_state.results = pd.concat([st.session_state.results, new_row], ignore_index=True)
-                
-                finally:
-                    await checker.close()
-                    st.session_state.crawling = False
+                        result = await checker.fetch_and_parse(current_url)
+                        new_row = pd.DataFrame([result])
+                        st.session_state.results = pd.concat([st.session_state.results, new_row], ignore_index=True)
+                        
+                        if depth < max_depth:
+                            links = await discover_links(
+                                current_url, 
+                                checker.session, 
+                                checker.user_agent, 
+                                crawl_scope
+                            )
+                            for link in links:
+                                if link not in visited:
+                                    queue.append((link, depth + 1))
+                                    
+                        st.experimental_rerun()
+                else:
+                    for url in final_urls:
+                        result = await checker.fetch_and_parse(url)
+                        new_row = pd.DataFrame([result])
+                        st.session_state.results = pd.concat([st.session_state.results, new_row], ignore_index=True)
+                        st.experimental_rerun()
             
-            loop.run_until_complete(wrapper())
-        
-        threading.Thread(target=run_async, daemon=True).start()
+            finally:
+                await checker.close()
+                st.session_state.crawling = False
+                st.experimental_rerun()
+
+        asyncio.run(process_urls())
 
     # Results Display
     st.header("Results")
