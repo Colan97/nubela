@@ -1,7 +1,8 @@
-streamlit
-pandas
-nest_asyncio
-aiohttp
-orjson
-beautifulsoup4
-lxml
+streamlit>=1.22.0
+aiohttp>=3.8.4
+beautifulsoup4>=4.12.2
+pandas>=2.0.0
+nest-asyncio>=1.5.7
+tenacity>=8.2.3
+lxml>=4.9.2
+requests>=2.31.0
