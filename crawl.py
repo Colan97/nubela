@@ -290,7 +290,7 @@ def main():
                     result = await checker.fetch_and_parse(current_url)
                     new_row = pd.DataFrame([result])
                     st.session_state.results = pd.concat([st.session_state.results, new_row])
-                    st.experimental_rerun()
+                    st.rerun()  # Updated from experimental_rerun()
                     
                     if depth < max_depth:
                         links = await discover_links(
@@ -314,7 +314,7 @@ def main():
                     result = await checker.fetch_and_parse(url)
                     new_row = pd.DataFrame([result])
                     st.session_state.results = pd.concat([st.session_state.results, new_row])
-                    st.experimental_rerun()
+                    st.rerun()  # Updated from experimental_rerun()
             finally:
                 await checker.close()
                 st.session_state.crawling = False
