@@ -9,7 +9,8 @@ from urllib.parse import urlparse, urljoin
 from datetime import datetime
 from bs4 import BeautifulSoup
 from tenacity import retry, stop_after_attempt, wait_exponential
-from robotexclusionrulesparser import RobotExclusionRulesParser
+import reppy
+from reppy.cache import Robots
 
 # --- Constants ---
 DEFAULT_REQUEST_TIMEOUT = 15
@@ -54,27 +55,25 @@ logging.basicConfig(
     ]
 )
 
-# --- Asynchronous Request Functions ---
+# --- Asynchronous Request Functions --- 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=15))
-async def get_robots_parser(url: str, session: aiohttp.ClientSession) -> RobotExclusionRulesParser:
+async def fetch_robots(url: str, session: aiohttp.ClientSession) -> Robots:
     parsed_url = urlparse(url)
     robot_url = f"{parsed_url.scheme}://{parsed_url.netloc}/robots.txt"
-    async with session.get(robot_url, ssl=False, timeout=15) as response:
+    async with session.get(robot_url, ssl=False) as response:
         if response.status == 200:
-            parser = RobotExclusionRulesParser()
-            parser.parse(await response.text())
-            return parser
-        return None
+            return Robots.from_string(await response.text(), robot_url)
+        return Robots.empty()
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=15))
 async def fetch_head(url: str, session: aiohttp.ClientSession) -> aiohttp.ClientResponse:
-    async with session.head(url, ssl=False, allow_redirects=True, timeout=15) as response:
+    async with session.head(url, ssl=False, allow_redirects=True) as response:
         await response.read()
         return response
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=15))
 async def fetch_content(url: str, session: aiohttp.ClientSession) -> aiohttp.ClientResponse:
-    async with session.get(url, ssl=False, timeout=30) as response:
+    async with session.get(url, ssl=False) as response:
         await response.read()
         return response
 
@@ -90,7 +89,7 @@ class URLProcessor:
         self.session = aiohttp.ClientSession(
             headers={"User-Agent": self.user_agent},
             timeout=aiohttp.ClientTimeout(total=self.timeout),
-            json_serialize=json.dumps  # Use standard json library
+            json_serialize=json.dumps
         )
         return self
 
@@ -104,7 +103,7 @@ class URLProcessor:
                 content_resp = await fetch_content(url, self.session)
                 
                 # Robots.txt analysis
-                robots_parser = await get_robots_parser(url, self.session)
+                robots_rules = await fetch_robots(url, self.session)
                 
                 # SEO analysis
                 soup = BeautifulSoup(await content_resp.text(), "lxml")
@@ -116,7 +115,7 @@ class URLProcessor:
                     "Initial Status": head_resp.status,
                     "Redirected URL": str(content_resp.url),
                     "Final Status": content_resp.status,
-                    "Blocked by Robots": not robots_parser.is_allowed("*", url) if robots_parser else False,
+                    "Blocked by Robots": not robots_rules.allowed(url, "*") if robots_rules else False,
                     "Title": title if title != "None" else None,
                     "Meta Description": meta_desc if meta_desc != "None" else None,
                     "Processing Time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -136,22 +135,30 @@ class URLProcessor:
             }
 
 # --- Async Processing Function ---
-async def process_urls_chunked(urls: list, processor: URLProcessor, chunk_size: int = DEFAULT_CHUNK_SIZE) -> list:
-    results = []
-    for i in range(0, len(urls), chunk_size):
-        chunk = urls[i:i+chunk_size]
-        tasks = [processor.process_url(url) for url in chunk]
-        chunk_results = await asyncio.gather(*tasks)
-        results.extend(chunk_results)
-    return results
+async def process_urls_chunked(urls: list, user_agent: str, timeout: int, concurrency_limit: int, chunk_size: int = DEFAULT_CHUNK_SIZE) -> list:
+    async with URLProcessor(user_agent, timeout, concurrency_limit) as processor:
+        results = []
+        for i in range(0, len(urls), chunk_size):
+            chunk = urls[i:i+chunk_size]
+            tasks = [processor.process_url(url) for url in chunk]
+            chunk_results = await asyncio.gather(*tasks)
+            results.extend(chunk_results)
+        return results
 
 # --- Sitemap Parsing ---
 async def parse_sitemap(sitemap_url: str) -> list:
     async with aiohttp.ClientSession() as session:
-        async with session.get(sitemap_url) as resp:
-            content = await resp.text()
-            loc_tags = re.findall(r'<loc>([^<]+)</loc>', content)
-            return [urljoin(sitemap_url, loc) for loc in loc_tags]
+        try:
+            async with session.get(sitemap_url) as resp:
+                if resp.status != 200:
+                    logging.warning(f"Failed to fetch sitemap {sitemap_url}: status {resp.status}")
+                    return []
+                content = await resp.text()
+                loc_tags = re.findall(r'<loc>([^<]+)</loc>', content)
+                return [urljoin(sitemap_url, loc) for loc in loc_tags]
+        except Exception as e:
+            logging.error(f"Error parsing sitemap {sitemap_url}: {str(e)}")
+            return []
 
 # --- Main Function ---
 def main():
@@ -171,18 +178,18 @@ def main():
         st.write(f"Found {len(sitemap_urls)} URLs in sitemap.")
         target_urls.extend(sitemap_urls)
     
-    target_urls.extend([url.strip() for url in seed_urls if url.strip()])
+    cleaned_seed_urls = [url.strip() for url in seed_urls if url.strip()]
+    target_urls.extend(cleaned_seed_urls)
+    deduplicated_urls = list(set(target_urls))[:max_urls]
     
-    if target_urls:
+    if deduplicated_urls:
         if st.button("Start Processing"):
-            processor = URLProcessor(USER_AGENTS[chosen_ua], timeout, concurrency)
-            processed_urls = target_urls[:max_urls]
+            user_agent = USER_AGENTS[chosen_ua]
             
             with st.spinner("Processing URLs..."):
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                results = loop.run_until_complete(process_urls_chunked(processed_urls, processor))
-                loop.close()
+                results = asyncio.run(
+                    process_urls_chunked(deduplicated_urls, user_agent, timeout, concurrency)
+                )
             
             df = pd.DataFrame(results)
             st.subheader("Results")
