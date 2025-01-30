@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import aiohttp
 import asyncio
-import orjson
+import json
 import logging
 import re
 from urllib.parse import urlparse, urljoin
@@ -90,7 +90,7 @@ class URLProcessor:
         self.session = aiohttp.ClientSession(
             headers={"User-Agent": self.user_agent},
             timeout=aiohttp.ClientTimeout(total=self.timeout),
-            json_serialize=orjson.dumps
+            json_serialize=json.dumps  # Use standard json library
         )
         return self
 
