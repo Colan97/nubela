@@ -7,4 +7,4 @@ nest-asyncio==1.5.8
 requests==2.31.0
 ujson==5.7.0
 aiohttp>=3.9.0
-Pillow==9.5.0  # Downgraded to resolve conflict
+Pillow==9.0.1  # Downgraded to resolve conflict
