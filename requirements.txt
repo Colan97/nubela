@@ -1,1 +1,9 @@
+streamlit
+pandas
+aiohttp
 nest_asyncio
+orjson
+beautifulsoup4
+tenacity
+requests
+lxml
