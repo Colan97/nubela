@@ -1,21 +1,19 @@
-FROM python:3.12-slim-buster
+FROM python:3.11-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    zlib1g \
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libssl-dev \
+    libffi-dev \
+    python-dev \
     zlib1g-dev \
-    libjpeg-dev \
-    libpng-dev \
-    libtiff-dev \
-    libwebp-dev \
-    freetype2-dev \
-    libopenjp2-7-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Copy application code
+COPY . /app
 WORKDIR /app
 
-COPY requirements.txt .
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
 
 CMD ["streamlit", "run", "crawl.py"]
