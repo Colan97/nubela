@@ -177,7 +177,7 @@ class URLChecker:
         """
         headers = {"User-Agent": self.user_agent}
         async with self.semaphore:
-            # 1) Perform initial GET (no redirects)
+            # Perform initial GET (no redirects)
             try:
                 is_allowed, block_rule = await self.check_robots_txt(url)
                 async with self.session.get(url, headers=headers, ssl=False, allow_redirects=False) as resp:
@@ -208,7 +208,7 @@ class URLChecker:
                                 initial_status=initial_status
                             )
 
-                            # Then override the columns for initial vs. redirected
+                            # Override columns for initial vs. redirected
                             final_data["Redirected_URL"] = redirected_url
                             final_data["Redirected_Status_Code"] = redirected_status
                             final_data["Redirected_Status_Type"] = self.get_status_type(redirected_status)
@@ -304,7 +304,6 @@ class URLChecker:
     ) -> Dict:
         """
         Parse the final HTML for SEO data (title, meta desc, etc.). Return a row dict.
-        We also gather link  if BFS calls us.
         """
         soup = BeautifulSoup(html_content, "lxml")
         title = self.get_title(soup)
@@ -321,7 +320,6 @@ class URLChecker:
         has_noindex = "noindex" in combined_robots
 
         # Evaluate indexability
-        # If final status is 200, not blocked, not noindex, canonical matches, ...
         canonical_matches = (canonical_url == "" or canonical_url == original_url)
         is_indexable = (
             status_code == 200
@@ -379,7 +377,6 @@ class URLChecker:
         Build a result row for non-200 or non-HTML responses, including redirect loops, 404, etc.
         final_status might be an int or "Redirect Loop".
         """
-        # If final_status is an int, get a string label
         status_type = (
             self.get_status_type(final_status)
             if isinstance(final_status, int)
@@ -392,6 +389,7 @@ class URLChecker:
             reason_parts.append("Blocked by robots.txt")
         if not reason_parts:
             reason_parts.append("Page is indexable")
+
         return {
             "Original_URL": original_url,
             "Initial_Status_Code": initial_status,
@@ -425,6 +423,7 @@ class URLChecker:
             reason_parts.append("Blocked by robots.txt")
         if not reason_parts:
             reason_parts.append("Page is indexable")
+
         return {
             "Original_URL": url,
             "Initial_Status_Code": code,
@@ -510,7 +509,6 @@ async def bfs_crawl(
     checker: URLChecker,
     max_depth: int = 3,
     max_urls: int = DEFAULT_MAX_URLS,
-    sitemap_urls: List[str] = None,
     show_partial_callback=None
 ) -> List[Dict]:
     """
@@ -526,13 +524,6 @@ async def bfs_crawl(
     allowed_domain = seed_parsed.netloc.lower()
     seed_url = seed_url.strip()
     queue.append((seed_url, 0))
-
-    # Add sitemap URLs to the queue if provided
-    if sitemap_urls:
-        for url in sitemap_urls:
-            parsed = urlparse(url)
-            if parsed.netloc.lower() == allowed_domain:
-                queue.append((url, 0))
 
     await checker.setup()
 
@@ -711,7 +702,6 @@ def main():
                     checker=checker,
                     max_depth=DEFAULT_MAX_DEPTH,
                     max_urls=DEFAULT_MAX_URLS,
-                    sitemap_urls=sitemap_urls if include_sitemap_in_crawl else None,
                     show_partial_callback=lambda r, c, t: show_partial_data(r, c, t)
                 )
                 return res
