@@ -21,9 +21,9 @@ RUN apt-get update && \
         libharfbuzz-dev \
         libfribidi-dev \
         tcl8.6-dev \
-        tk8.6-dev \
-        && apt-get clean && \
-        rm -rf /var/lib/apt/lists/*
+        tk8.6-dev && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy requirements.txt
 COPY requirements.txt .
