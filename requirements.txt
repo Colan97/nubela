@@ -1,9 +1,66 @@
+# Core dependencies
 streamlit==1.24.0
-pandas>=2.2.0  # Use a version compatible with Python 3.12
-aiohttp==3.8.5
+pandas>=2.2.0,<3.0.0
 beautifulsoup4==4.12.2
 tenacity==8.2.3
 lxml==4.9.3
 nest-asyncio==1.5.8
 requests==2.31.0
-ujson==5.7.0  # Alternative to orjson
+ujson==5.7.0
+
+# Updated aiohttp to a compatible version
+aiohttp==3.10.0  # Updated to a version compatible with Python 3.12
+
+# Updated Pillow to a compatible version
+Pillow==10.2.0  # Updated to a version compatible with Python 3.12
+
+# Additional dependencies
+altair<6,>=4.0
+blinker<2,>=1.0.0
+cachetools<6,>=4.0
+click<9,>=7.0
+importlib-metadata<7,>=1.4
+numpy<2,>=1
+packaging<24,>=14.1
+protobuf<5,>=3.20
+pyarrow>=4.0
+pympler<2,>=0.9
+python-dateutil<3,>=2
+rich<14,>=10.11.0
+toml<2
+typing-extensions<5,>=4.0.1
+tzlocal<5,>=1.1
+validators<1,>=0.2
+gitpython!=3.1.19,<4,>=3
+pydeck<1,>=0.1.dev5
+tornado<7,>=6.0.3
+watchdog
+attrs>=17.3.0
+charset-normalizer<4.0,>=2.0
+multidict<7.0,>=4.5
+async-timeout<5.0,>=4.0.0a3
+yarl<2.0,>=1.0
+frozenlist>=1.1.1
+aiosignal>=1.1.2
+soupsieve>1.2
+idna<4,>=2.5
+urllib3<3,>=1.21.1
+certifi>=2017.4.17
+pytz>=2020.1
+tzdata>=2022.7
+jinja2
+jsonschema>=3.0
+narwhals>=1.14.2
+gitdb<5,>=4.0.1
+zipp>=0.5
+six>=1.5
+markdown-it-py>=2.2.0
+pygments<3.0.0,>=2.13.0
+pytz-deprecation-shim
+propcache>=0.2.0
+smmap<6,>=3.0.1
+MarkupSafe>=2.0
+jsonschema-specifications>=2023.03.6
+referencing>=0.28.4
+rpds-py>=0.7.1
+mdurl~=0.1
