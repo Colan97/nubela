@@ -1,12 +1,12 @@
 # Core dependencies
 streamlit==1.24.0
-pandas>=2.2.0,<3.0.0
+pandas==2.2.3  # Updated to a version compatible with Python 3.12
 beautifulsoup4==4.12.2
 tenacity==8.2.3
 lxml==4.9.3
 nest-asyncio==1.5.8
 requests==2.31.0
-ujson==5.7.0
+ujson==5.7.0  # Replaced orjson with ujson
 
 # Updated aiohttp to a compatible version
 aiohttp==3.10.0  # Updated to a version compatible with Python 3.12
