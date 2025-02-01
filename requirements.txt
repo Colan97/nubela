@@ -7,11 +7,7 @@ lxml==4.9.3
 nest-asyncio==1.5.8
 requests==2.31.0
 ujson==5.7.0  # Replaced orjson with ujson
-
-# Updated aiohttp to a compatible version
 aiohttp==3.10.0  # Updated to a version compatible with Python 3.12
-
-# Updated Pillow to a compatible version
 Pillow==9.5.0  # Downgraded to satisfy streamlit's dependency
 
 # Additional dependencies
