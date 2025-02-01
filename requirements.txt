@@ -1,9 +1,9 @@
 streamlit==1.24.0
-pandas==2.1.0
+pandas>=2.2.0  # Use a version compatible with Python 3.12
 aiohttp==3.8.5
-orjson==3.8.6
 beautifulsoup4==4.12.2
 tenacity==8.2.3
 lxml==4.9.3
 nest-asyncio==1.5.8
 requests==2.31.0
+ujson==5.7.0  # Alternative to orjson
