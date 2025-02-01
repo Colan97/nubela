@@ -1,25 +1,21 @@
-# Use an official Python runtime as the base image
-FROM python:3.10-slim
+FROM python:3.12-slim-buster
 
-# Set working directory inside the container
-WORKDIR /app
-
-# Install system-level dependencies
-RUN apt-get update && apt-get install -y \
-    libjpeg-dev zlib1g-dev \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    zlib1g \
+    zlib1g-dev \
+    libjpeg-dev \
+    libpng-dev \
+    libtiff-dev \
+    libwebp-dev \
+    freetype2-dev \
+    libopenjp2-7-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements.txt into the container
-COPY requirements.txt .
+WORKDIR /app
 
-# Install Python dependencies
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application code
 COPY . .
 
-# Expose the port Streamlit runs on
-EXPOSE 8501
-
-# Command to run the Streamlit app
 CMD ["streamlit", "run", "crawl.py"]
