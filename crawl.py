@@ -376,7 +376,7 @@ class URLChecker:
         if has_noindex:
             reason_parts.append("Noindex directive")
         if not canonical_matches:
-            reason_parts.append("Canonical != Original URL")
+            reason_parts.append("Canonical is pointing to other URL")
         if not reason_parts:
             reason_parts.append("Page is indexable")
 
