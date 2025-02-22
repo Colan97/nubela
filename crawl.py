@@ -746,7 +746,7 @@ def main():
     st.write(f"Total URLs (after dedup & cap at 25k): {len(combined_urls)}")
 
     # BFS
-    do_bfs = st.checkbox("Enable BFS Crawl?")
+    do_bfs = st.checkbox("Spider")
     bfs_seed_url = ""
     if do_bfs:
         bfs_seed_url = st.text_input("Seed URL for BFS")
