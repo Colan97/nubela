@@ -12,7 +12,7 @@ import requests  # for simple sitemap fetch, or replace with advertools if desir
 from datetime import datetime
 from typing import List, Dict, Tuple, Set
 from collections import deque
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, urlunparse
 
 from bs4 import BeautifulSoup
 
@@ -66,6 +66,18 @@ USER_AGENTS = {
     ),
     "Custom Adidas SEO Bot": DEFAULT_USER_AGENT,
 }
+
+# --------------------------------------------
+# Helper to Remove Fragments
+# --------------------------------------------
+def normalize_url(url: str) -> str:
+    """
+    Remove any #fragment part so that URLs differing only by fragment
+    (e.g. /page#MainContent, /page#AnotherAnchor) are treated as the same.
+    """
+    parsed = urlparse(url)
+    # Rebuild parsed URL but remove the fragment
+    return urlunparse(parsed._replace(fragment=""))
 
 # -------------------------------------------------------------------
 # URL Checker Class
@@ -200,6 +212,9 @@ class URLChecker:
         """
         headers = {"User-Agent": self.user_agent}
 
+        # Always remove fragment from the URL to avoid multiple requests to the same resource
+        url = normalize_url(url)
+
         async with self.semaphore:
             try:
                 # Check robots before we even request
@@ -283,7 +298,7 @@ class URLChecker:
         Follow up to MAX_REDIRECTS. Return (final_url, final_status, final_html, final_headers).
         If loop or excessive redirect, final_status = "Redirect Loop".
         """
-        current_url = start_url
+        current_url = normalize_url(start_url)
         html_content = None
         final_headers = {}
 
@@ -303,7 +318,9 @@ class URLChecker:
                     loc = resp.headers.get("Location")
                     if not loc:
                         return (current_url, status, html_content, final_headers)
-                    current_url = urljoin(current_url, loc)
+                    # remove fragment from the next location
+                    loc_no_fragment = normalize_url(urljoin(current_url, loc))
+                    current_url = loc_no_fragment
                 else:
                     return (current_url, status, html_content, final_headers)
 
@@ -546,7 +563,8 @@ async def bfs_crawl(
     queue = deque()
     results = []
 
-    seed_url = seed_url.strip()
+    # Normalize seed_url by removing fragment
+    seed_url = normalize_url(seed_url.strip())
     seed_parsed = urlparse(seed_url)
     allowed_domain = seed_parsed.netloc.lower()
 
@@ -570,10 +588,14 @@ async def bfs_crawl(
             if depth < max_depth:
                 discovered_links = await discover_links(url, checker.session, checker.user_agent)
                 for link in discovered_links:
-                    link_parsed = urlparse(link)
-                    if link_parsed.netloc.lower() == allowed_domain and link not in visited:
-                        if len(visited) < max_urls:
-                            queue.append((link, depth + 1))
+                    # remove fragment from discovered link
+                    link_normalized = normalize_url(link)
+                    link_parsed = urlparse(link_normalized)
+
+                    # same domain?
+                    if link_parsed.netloc.lower() == allowed_domain:
+                        if link_normalized not in visited and len(visited) < max_urls:
+                            queue.append((link_normalized, depth + 1))
 
         except Exception as e:
             logging.error(f"BFS error on {url}: {e}")
@@ -589,9 +611,14 @@ async def discover_links(url: str, session: aiohttp.ClientSession, user_agent: s
     """
     Minimal fetch for BFS link discovery.
     We do not follow redirects here, nor do advanced checks.
+    We'll parse the HTML and extract <a href>.
     """
     headers = {"User-Agent": user_agent}
     links = []
+
+    # Make sure we remove fragment from "url" so we don't fetch duplicates
+    url = normalize_url(url)
+
     try:
         async with session.get(url, headers=headers, ssl=False, allow_redirects=False) as resp:
             if resp.status == 200 and resp.content_type and resp.content_type.startswith("text/html"):
@@ -610,7 +637,13 @@ async def discover_links(url: str, session: aiohttp.ClientSession, user_agent: s
 async def process_urls_chunked(urls: List[str], checker: URLChecker, show_partial_callback=None) -> List[Dict]:
     results = []
     total = len(urls)
-    chunks = [urls[i : i + DEFAULT_CHUNK_SIZE] for i in range(0, total, DEFAULT_CHUNK_SIZE)]
+
+    # Normalize (remove fragments) from all input URLs to match Screaming Frog
+    normalized_urls = [normalize_url(u.strip()) for u in urls if u.strip()]
+    # Deduplicate after normalization
+    normalized_urls = list(dict.fromkeys(normalized_urls))
+
+    chunks = [normalized_urls[i : i + DEFAULT_CHUNK_SIZE] for i in range(0, len(normalized_urls), DEFAULT_CHUNK_SIZE)]
     processed = 0
 
     await checker.setup()
@@ -647,7 +680,8 @@ def parse_sitemap(url: str) -> List[str]:
             # Look for <loc> in any namespace
             for loc_tag in root.findall(".//{*}loc"):
                 if loc_tag.text:
-                    out.append(loc_tag.text.strip())
+                    # Also remove fragment from each sitemap URL
+                    out.append(normalize_url(loc_tag.text.strip()))
     except:
         pass
     return out
@@ -656,7 +690,7 @@ def parse_sitemap(url: str) -> List[str]:
 # Main Streamlit UI
 # -----------------------------
 def main():
-    st.title("Async URL Checker with BFS Option")
+    st.title("Async URL Checker with Fragment-Stripping & BFS Option")
 
     concurrency = st.slider("Concurrency (number of parallel requests)", 1, 200, 10)
 
@@ -682,12 +716,13 @@ def main():
             content = uploaded.read().decode("utf-8", errors="replace")
             raw_urls = re.split(r"\s+", content.strip())
 
-    # Store user-provided URLs in session state so we don't lose them after fetching sitemaps
+    # We store user-provided URLs in session state so we don't lose them after fetching sitemaps
     if 'input_urls' not in st.session_state:
         st.session_state['input_urls'] = []
 
     # Update session state if user has provided new input
     if raw_urls:
+        # Add to input_urls (deduplicate later)
         st.session_state['input_urls'] = list(set(st.session_state['input_urls'] + raw_urls))
 
     # Sitemaps
@@ -705,7 +740,7 @@ def main():
 
     # Combine user-provided + sitemap
     combined_urls = st.session_state['input_urls'] + st.session_state['sitemap_urls']
-    combined_urls = list(dict.fromkeys([u.strip() for u in combined_urls if u.strip()]))  # Deduplicate
+    combined_urls = list(dict.fromkeys([u.strip() for u in combined_urls if u.strip()]))
     if len(combined_urls) > DEFAULT_MAX_URLS:
         combined_urls = combined_urls[:DEFAULT_MAX_URLS]
     st.write(f"Total URLs (after dedup & cap at 25k): {len(combined_urls)}")
@@ -738,7 +773,7 @@ def main():
 
         final_results = []
         if do_bfs:
-            # BFS approach (seed URL) ignoring the manually entered combined_urls
+            # BFS approach (seed URL); ignoring the manually entered combined_urls
             async def run_bfs():
                 return await bfs_crawl(
                     seed_url=bfs_seed_url.strip(),
@@ -783,7 +818,6 @@ def main():
         # Optional summary
         show_summary(df)
 
-
 def show_summary(df: pd.DataFrame):
     st.subheader("Summary (Optional)")
     st.write("**Initial Status Code Distribution**")
@@ -792,8 +826,8 @@ def show_summary(df: pd.DataFrame):
         st.write(f"{code}: {count}")
 
     st.write("**Final Status Code Distribution**")
-    redirected_code_counts = df["Final_Status_Code"].value_counts()
-    for code, count in redirected_code_counts.items():
+    final_code_counts = df["Final_Status_Code"].value_counts()
+    for code, count in final_code_counts.items():
         st.write(f"{code}: {count}")
 
     block_counts = df["Is_Blocked_by_Robots"].value_counts()
