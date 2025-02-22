@@ -692,7 +692,7 @@ def parse_sitemap(url: str) -> List[str]:
 def main():
     st.title("Dentsu-Crawler")
 
-    concurrency = st.slider("Concurrency (number of parallel requests)", 1, 200, 10)
+    concurrency = st.slider("URls/s", 1, 200, 10)
 
     # User-Agent selection
     ua_options = list(USER_AGENTS.keys()) + ["Custom"]
