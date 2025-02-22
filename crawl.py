@@ -385,7 +385,7 @@ class URLChecker:
             "Initial_Status_Code": initial_status,
             "Initial_Status_Type": initial_type,
             "Final_URL": current_url,
-            "Final_Status_Code": status_code,
+            "Redirect_Status": status_code,
             "Final_Status_Type": self.get_status_type(status_code),
             "Is_Blocked_by_Robots": "Yes" if not is_allowed else "No",
             "Robots_Block_Rule": block_rule,
@@ -436,7 +436,7 @@ class URLChecker:
             "Initial_Status_Code": initial_status,
             "Initial_Status_Type": initial_type,
             "Final_URL": final_url or "N/A",
-            "Final_Status_Code": final_status,
+            "Redirect_Status": final_status,
             "Final_Status_Type": status_type,
             "Is_Blocked_by_Robots": "Yes" if not is_allowed else "No",
             "Robots_Block_Rule": block_rule,
@@ -470,7 +470,7 @@ class URLChecker:
             "Initial_Status_Code": code,
             "Initial_Status_Type": message,
             "Final_URL": "N/A",
-            "Final_Status_Code": code,
+            "Redirect_Status": code,
             "Final_Status_Type": message,
             "Is_Blocked_by_Robots": "Yes" if not is_allowed else "No",
             "Robots_Block_Rule": "N/A",
@@ -826,7 +826,7 @@ def show_summary(df: pd.DataFrame):
         st.write(f"{code}: {count}")
 
     st.write("**Final Status Code Distribution**")
-    final_code_counts = df["Final_Status_Code"].value_counts()
+    final_code_counts = df["Redirect_Status"].value_counts()
     for code, count in final_code_counts.items():
         st.write(f"{code}: {count}")
 
