@@ -690,7 +690,7 @@ def parse_sitemap(url: str) -> List[str]:
 # Main Streamlit UI
 # -----------------------------
 def main():
-    st.title("Async URL Checker with Fragment-Stripping & BFS Option")
+    st.title("Dentsu-Crawler")
 
     concurrency = st.slider("Concurrency (number of parallel requests)", 1, 200, 10)
 
