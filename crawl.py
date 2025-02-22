@@ -743,7 +743,7 @@ def main():
     combined_urls = list(dict.fromkeys([u.strip() for u in combined_urls if u.strip()]))
     if len(combined_urls) > DEFAULT_MAX_URLS:
         combined_urls = combined_urls[:DEFAULT_MAX_URLS]
-    st.write(f"Total URLs (after dedup & cap at 25k): {len(combined_urls)}")
+    st.write(f"Total URLs (Max Limit 25k URLs): {len(combined_urls)}")
 
     # BFS
     do_bfs = st.checkbox("Spider")
