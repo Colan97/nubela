@@ -12,7 +12,7 @@ from typing import List, Dict, Tuple, Set, Optional
 from urllib.parse import urlparse, urljoin
 from bs4 import BeautifulSoup
 from datetime import datetime
-from collections import deque
+from asyncio import as_completed
 
 nest_asyncio.apply()
 
@@ -53,83 +53,30 @@ USER_AGENTS = {
     "Custom Adidas SEO Bot": DEFAULT_USER_AGENT,
 }
 
-
 # ----------------------------------------
-# Helpers for URL Normalization & Scope
+# Basic Helpers
 # ----------------------------------------
 def normalize_url(url: str) -> str:
     """
     Remove #fragment, strip whitespace, ensure consistent format.
     """
     url = url.strip()
-    # parse => remove fragment => rejoin
     parsed = urlparse(url)
+    # drop fragment
     normalized = parsed._replace(fragment="")
     return normalized.geturl()
 
-
-def in_scope(base_url: str, test_url: str, scope_mode: str) -> bool:
+def in_same_domain(base_url: str, test_url: str) -> bool:
     """
-    Return True if 'test_url' is within the chosen scope relative to 'base_url'.
-    scope_mode can be:
-      - "Exact URL Only"
-      - "In Subfolder"
-      - "Same Subdomain"
-      - "All Subdomains"
-    This is a simplistic approach; adapt as needed.
+    Example: Restrict BFS to exactly the same domain (netloc).
+    You can expand to subdomain logic, subfolder logic, etc. if desired.
     """
-    base_parsed = urlparse(base_url)
-    test_parsed = urlparse(test_url)
+    base_netloc = urlparse(base_url).netloc.lower()
+    test_netloc = urlparse(test_url).netloc.lower()
+    return (test_netloc == base_netloc)
 
-    base_scheme = base_parsed.scheme
-    base_netloc = base_parsed.netloc.lower()
-    base_path = base_parsed.path
-    test_netloc = test_parsed.netloc.lower()
-    test_path = test_parsed.path
-
-    # Must match scheme?
-    if test_parsed.scheme != base_scheme:
-        return False
-
-    if scope_mode == "Exact URL Only":
-        # Means the test URL must be exactly the same as base
-        return (test_url == base_url)
-
-    elif scope_mode == "In Subfolder":
-        # The netloc must match exactly (same domain/subdomain)
-        # And test_url's path must start with base_path
-        # e.g. base:  https://example.com/folder
-        # test: https://example.com/folder/anything
-        if test_netloc != base_netloc:
-            return False
-        return test_path.startswith(base_path)
-
-    elif scope_mode == "Same Subdomain":
-        # netloc must match exactly, ignoring path
-        return (test_netloc == base_netloc)
-
-    elif scope_mode == "All Subdomains":
-        # check if test_netloc ends with base_netloc's "root domain"
-        # e.g. base_netloc: store.example.com => root: example.com
-        # let's do a naive approach: split base_netloc by '.', then check if test_netloc endswith
-        # or you can handle TLD special rules. We'll keep it simple:
-        parts = base_netloc.split('.')
-        if len(parts) <= 1:
-            # fallback, just use same domain check
-            return (test_netloc == base_netloc)
-        # remove subdomain part
-        root_domain = '.'.join(parts[-2:])  # e.g. "example.com"
-        return test_netloc.endswith(root_domain)
-
-    return False
-
-
-def regex_filter(url: str, include_pattern: Optional[str], exclude_pattern: Optional[str]) -> bool:
-    """
-    Return True if 'url' passes the include/exclude regex filters.
-    - If include_pattern is set, the URL must match it.
-    - If exclude_pattern is set, the URL must NOT match it.
-    """
+# Optionally add a regex filter, if you like:
+def pass_regex_filters(url: str, include_pattern: Optional[str], exclude_pattern: Optional[str]) -> bool:
     if include_pattern:
         if not re.search(include_pattern, url):
             return False
@@ -138,18 +85,15 @@ def regex_filter(url: str, include_pattern: Optional[str], exclude_pattern: Opti
             return False
     return True
 
-
 # ----------------------------------------
-# URL Checker Class
+# URLChecker
 # ----------------------------------------
 class URLChecker:
-    def __init__(self, user_agent: str, concurrency: int = 10, timeout: int = 15,
-                 respect_robots: bool = True):
+    def __init__(self, user_agent: str, concurrency: int = 10, timeout: int = 15):
         self.user_agent = user_agent
         self.max_concurrency = concurrency
         self.timeout_duration = timeout
-        self.respect_robots = respect_robots
-        self.robots_cache = {}  # domain => content or None
+        self.robots_cache = {}
         self.connector = None
         self.session = None
         self.semaphore = None
@@ -177,67 +121,6 @@ class URLChecker:
         if self.session:
             await self.session.close()
 
-    async def check_robots_txt(self, url: str) -> bool:
-        """
-        Return True if allowed, False if disallowed by robots.txt
-        If self.respect_robots is False => always return True.
-        """
-        if not self.respect_robots:
-            return True
-        parsed = urlparse(url)
-        base = f"{parsed.scheme}://{parsed.netloc}"
-        path = parsed.path
-
-        if base not in self.robots_cache:
-            # fetch
-            robots_url = base + "/robots.txt"
-            try:
-                headers = {"User-Agent": self.user_agent}
-                async with self.session.get(robots_url, ssl=False, headers=headers) as resp:
-                    if resp.status == 200:
-                        text = await resp.text()
-                        self.robots_cache[base] = text
-                    else:
-                        self.robots_cache[base] = None
-            except:
-                self.robots_cache[base] = None
-
-        content = self.robots_cache.get(base)
-        if not content:
-            return True  # no robots => assume allowed
-
-        return self.parse_robots(content, path)
-
-    def parse_robots(self, content: str, path: str) -> bool:
-        """
-        Minimal parse of 'disallow' lines for 'User-agent: *' or our custom user agent.
-        We do not parse 'Allow:' lines. Return True if allowed, False if disallowed.
-        """
-        lines = content.splitlines()
-        active = False
-        agent_lower = self.user_agent.lower()
-        path_lower = path.lower()
-
-        for line in lines:
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-            parts = line.split(':', 1)
-            if len(parts) < 2:
-                continue
-            key, val = parts[0].lower(), parts[1].strip().lower()
-
-            if key == "user-agent":
-                # if val == '*' or agent_lower in val => relevant
-                if val == '*' or agent_lower in val:
-                    active = True
-                else:
-                    active = False
-            elif key == "disallow" and active:
-                if val and path_lower.startswith(val):
-                    return False  # disallowed
-        return True  # if not disallowed => allowed
-
     @staticmethod
     def is_html(resp: aiohttp.ClientResponse) -> bool:
         ctype = resp.content_type
@@ -245,14 +128,12 @@ class URLChecker:
 
     async def fetch_and_parse(self, url: str) -> Dict:
         """
-        Returns a dict with SEO data. If error => returns partial info.
+        Returns a dict with SEO data. 
+        HTTP Status fields are stored as strings to avoid ArrowInvalid 
+        when mixing int & str (e.g., 'Timeout').
         """
         url = normalize_url(url)
-
-        # CAUSE OF ARROWINVALID ERROR:
-        # Storing 'Initial_Status_Code' & 'Final_Status_Code' as strings to avoid
-        # "ArrowInvalid: Could not convert 'Timeout' with type str: tried to convert to int64"
-        # You can unify them as int if you handle "Timeout"/"Error" differently.
+        # initialize row
         data = {
             "Original_URL": url,
             "Initial_Status_Code": "",
@@ -268,108 +149,83 @@ class URLChecker:
             "Meta_Robots": "",
             "X_Robots_Tag": "",
             "HTML_Lang": "",
-            "Is_Blocked_by_Robots": "",
+            "Is_Blocked_by_Robots": "No",
             "Robots_Block_Rule": "",
             "Is_Indexable": "No",
             "Indexability_Reason": "",
             "HTTP_Last_Modified": "",
-            "Sitemap_LastMod": "",  # not used in this example, but kept for consistency
             "Timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         }
 
-        # 1) Robots check
-        allowed = await self.check_robots_txt(url)
-        data["Is_Blocked_by_Robots"] = "No" if allowed else "Yes"
-        if not allowed:
-            data["Robots_Block_Rule"] = "Disallow"
-            data["Indexability_Reason"] = "Blocked by robots.txt"
-            data["Final_URL"] = url
-            data["Final_Status_Code"] = "N/A"
-            data["Final_Status_Type"] = "Robots Block"
-            return data
-
-        # 2) Attempt fetch
         headers = {"User-Agent": self.user_agent}
         async with self.semaphore:
             try:
                 async with self.session.get(url, headers=headers, ssl=False, allow_redirects=False) as resp:
-                    initial_status_str = str(resp.status)
-                    data["Initial_Status_Code"] = initial_status_str
+                    init_str = str(resp.status)
+                    data["Initial_Status_Code"] = init_str
                     data["Initial_Status_Type"] = self.status_type_label(resp.status)
                     data["Final_URL"] = str(resp.url)
-                    location = resp.headers.get("Location")
 
-                    if resp.status in (301, 302, 307, 308) and location:
-                        # follow redirect chain
-                        return await self.follow_redirect_chain(url, location, data, headers)
+                    if resp.status in (301, 302, 307, 308) and resp.headers.get("Location"):
+                        return await self.handle_redirect_chain(url, data, headers)
                     else:
-                        # no redirect => parse if 200 HTML
                         if resp.status == 200 and self.is_html(resp):
                             content = await resp.text(errors='replace')
                             return self.parse_html_content(
-                                data, content, resp.headers, resp.status, is_allowed=True
+                                data, content, resp.headers, str(resp.status)
                             )
                         else:
-                            # Non-200 or not HTML => partial
-                            data["Final_Status_Code"] = initial_status_str
+                            # partial
+                            data["Final_Status_Code"] = init_str
                             data["Final_Status_Type"] = data["Initial_Status_Type"]
                             data["Indexability_Reason"] = "Non-200 or Non-HTML"
                             return data
-
             except asyncio.TimeoutError:
                 data["Initial_Status_Code"] = "Timeout"
-                data["Initial_Status_Type"] = "Request Timeout"
-                data["Final_URL"] = url
+                data["Initial_Status_Type"] = "Timeout"
                 data["Final_Status_Code"] = "Timeout"
-                data["Final_Status_Type"] = "Request Timeout"
+                data["Final_Status_Type"] = "Timeout"
                 data["Indexability_Reason"] = "Timeout"
                 return data
             except Exception as e:
+                err_str = str(e)
                 data["Initial_Status_Code"] = "Error"
-                data["Initial_Status_Type"] = str(e)
-                data["Final_URL"] = url
+                data["Initial_Status_Type"] = err_str
                 data["Final_Status_Code"] = "Error"
-                data["Final_Status_Type"] = str(e)
+                data["Final_Status_Type"] = err_str
                 data["Indexability_Reason"] = "Exception"
                 return data
 
-    async def follow_redirect_chain(self, origin_url: str, location: str, data: Dict, headers: Dict) -> Dict:
+    async def handle_redirect_chain(self, origin_url: str, data: Dict, headers: Dict) -> Dict:
         """
-        Follow up to MAX_REDIRECTS manually, returning final result dict.
+        Follow up to MAX_REDIRECTS manually.
         """
         current_url = origin_url
         for _ in range(MAX_REDIRECTS):
-            # Next redirect target
-            next_url = urljoin(current_url, location)
-            next_url = normalize_url(next_url)
             try:
-                async with self.session.get(next_url, headers=headers, ssl=False, allow_redirects=False) as resp:
-                    status_str = str(resp.status)
+                async with self.session.get(current_url, headers=headers, ssl=False, allow_redirects=False) as resp:
+                    st_str = str(resp.status)
                     data["Final_URL"] = str(resp.url)
-                    data["Final_Status_Code"] = status_str
+                    data["Final_Status_Code"] = st_str
                     data["Final_Status_Type"] = self.status_type_label(resp.status)
 
-                    if resp.status in (301, 302, 307, 308):
-                        location = resp.headers.get("Location")
-                        if not location:
-                            data["Indexability_Reason"] = "Redirect without location"
-                            return data
-                        current_url = next_url
+                    loc = resp.headers.get("Location")
+                    if resp.status in (301, 302, 307, 308) and loc:
+                        current_url = urljoin(current_url, loc)
+                        current_url = normalize_url(current_url)
                         continue
                     else:
                         # parse if 200 HTML
                         if resp.status == 200 and self.is_html(resp):
                             content = await resp.text(errors='replace')
-                            return self.parse_html_content(
-                                data, content, resp.headers, resp.status, is_allowed=True
-                            )
+                            return self.parse_html_content(data, content, resp.headers, st_str)
                         else:
-                            data["Indexability_Reason"] = "Non-200 or Non-HTML after redirect"
+                            data["Indexability_Reason"] = "Non-200 or Non-HTML in redirect chain"
                             return data
             except asyncio.TimeoutError:
                 data["Final_Status_Code"] = "Timeout"
-                data["Final_Status_Type"] = "Request Timeout"
-                data["Indexability_Reason"] = "Timeout during redirect"
+                data["Final_Status_Type"] = "Timeout"
+                data["Indexability_Reason"] = "Timeout in redirect chain"
                 return data
             except Exception as e:
                 data["Final_Status_Code"] = "Error"
@@ -377,18 +233,17 @@ class URLChecker:
                 data["Indexability_Reason"] = "Exception in redirect chain"
                 return data
 
-        data["Indexability_Reason"] = "Redirect Loop or Exceeding Max Redirects"
         data["Final_Status_Code"] = "Redirect Loop"
         data["Final_Status_Type"] = "Redirect Loop"
+        data["Indexability_Reason"] = "Max Redirects Exceeded"
         return data
 
-    def parse_html_content(self, data: Dict, html: str, resp_headers: aiohttp.typedefs.LooseHeaders,
-                           status: int, is_allowed: bool) -> Dict:
+    def parse_html_content(self, data: Dict, html: str, headers: aiohttp.typedefs.LooseHeaders,
+                           final_status_str: str) -> Dict:
         soup = BeautifulSoup(html, "lxml")
 
-        # Basic SEO elements
-        title_tag = soup.find("title")
-        data["Title"] = title_tag.get_text(strip=True) if title_tag else ""
+        t = soup.find("title")
+        data["Title"] = t.get_text(strip=True) if t else ""
 
         desc_tag = soup.find("meta", attrs={"name": "description"})
         if desc_tag and desc_tag.has_attr("content"):
@@ -396,34 +251,30 @@ class URLChecker:
 
         h1_tags = soup.find_all("h1")
         data["H1_Count"] = len(h1_tags)
-        data["H1_Text"] = h1_tags[0].get_text(strip=True) if len(h1_tags) > 0 else ""
-
-        html_tag = soup.find("html")
-        if html_tag and html_tag.has_attr("lang"):
-            data["HTML_Lang"] = html_tag["lang"]
+        data["H1_Text"] = h1_tags[0].get_text(strip=True) if h1_tags else ""
 
         canon_tag = soup.find("link", attrs={"rel": "canonical"})
-        data["Canonical_URL"] = canon_tag["href"] if (canon_tag and canon_tag.has_attr("href")) else ""
+        data["Canonical_URL"] = canon_tag["href"] if canon_tag and canon_tag.has_attr("href") else ""
 
         meta_robots = soup.find("meta", attrs={"name": "robots"})
         if meta_robots and meta_robots.has_attr("content"):
             data["Meta_Robots"] = meta_robots["content"]
 
-        x_robots = resp_headers.get("X-Robots-Tag", "")
+        x_robots = headers.get("X-Robots-Tag", "")
         data["X_Robots_Tag"] = x_robots
 
-        # last modified
-        data["HTTP_Last_Modified"] = resp_headers.get("Last-Modified", "")
+        html_tag = soup.find("html")
+        if html_tag and html_tag.has_attr("lang"):
+            data["HTML_Lang"] = html_tag["lang"]
 
-        # Evaluate indexability
-        combined = f"{data['Meta_Robots'].lower()} {x_robots.lower()}"
-        if "noindex" in combined:
+        data["HTTP_Last_Modified"] = headers.get("Last-Modified", "")
+
+        # check noindex
+        comb = f"{data['Meta_Robots'].lower()} {x_robots.lower()}"
+        if "noindex" in comb:
             data["Is_Indexable"] = "No"
             data["Indexability_Reason"] = "Noindex directive"
-        elif not is_allowed:
-            data["Is_Indexable"] = "No"
-            data["Indexability_Reason"] = "Blocked by robots.txt"
-        elif status != 200:
+        elif final_status_str != "200":
             data["Is_Indexable"] = "No"
             data["Indexability_Reason"] = "Non-200"
         else:
@@ -432,7 +283,7 @@ class URLChecker:
 
         return data
 
-    def status_type_label(self, status: int) -> str:
+    def status_type_label(self, code: int) -> str:
         mapping = {
             200: "OK",
             301: "Permanent Redirect",
@@ -444,99 +295,93 @@ class URLChecker:
             500: "Server Error",
             503: "Service Unavailable",
         }
-        return mapping.get(status, f"Status {status}")
+        return mapping.get(code, f"Status {code}")
 
 
-# ------------------------
-# LAYER-BASED BFS CRAWL
-# ------------------------
+# ----------------------------------
+# LAYER-BASED BFS w/ as_completed
+# ----------------------------------
 async def layer_bfs_crawl(
     seed_urls: List[str],
     checker: URLChecker,
     max_urls: int,
-    scope_mode: str,
-    include_regex: Optional[str],
-    exclude_regex: Optional[str],
+    include_pattern: Optional[str] = None,
+    exclude_pattern: Optional[str] = None,
     show_partial_callback=None
 ) -> List[Dict]:
     """
-    Layer-based BFS:
-    1) Start with 'seed_urls' as the first layer.
-    2) Fetch them in parallel, discover links, filter them by scope + regex.
-    3) Next iteration => newly discovered links become the next layer.
-    4) Stop when no new URLs or we reach max_urls.
-
-    No BFS depth => effectively unlimited depth until we run out of URLs or hit max_urls.
+    1) current_layer = set of seed_urls
+    2) For each layer:
+       - fetch them in parallel, but update results as each finishes (as_completed).
+       - gather discovered links, then next layer = those new links
+    3) Stop if no new links or we reach max_urls.
     """
+
     visited: Set[str] = set()
-    current_layer = set(normalize_url(u) for u in seed_urls if u.strip())
-    results = []
+    current_layer = {normalize_url(u) for u in seed_urls}
+    results: List[Dict] = []
 
     await checker.setup()
 
     while current_layer and len(visited) < max_urls:
-        # 1) Prepare tasks for this layer
         layer_list = list(current_layer)
         current_layer.clear()
 
-        # 2) BFS concurrency: gather all fetches in parallel
-        tasks = [checker.fetch_and_parse(u) for u in layer_list]
-        layer_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # 3) Append to overall results
-        valid_rows = [r for r in layer_results if isinstance(r, dict)]
-        results.extend(valid_rows)
-
-        # 4) Mark visited
+        # Mark them as visited so we don't pick them up next time
         for u in layer_list:
             visited.add(u)
-        
-        # 5) For each successful fetch, discover links => next layer
-        #    but only if we haven't exceeded max_urls
-        next_layer = set()
-        for i, row in enumerate(valid_rows):
-            final_url = row["Final_URL"] or row["Original_URL"]
-            try:
-                # discover links only if final status 200 & is_html, etc.
-                # but let's do a minimal approach: we always do discover_links
-                discovered = await discover_links(final_url, checker.session, checker.user_agent)
-                base_seed = seed_urls[0]  # reference for scope
-                for link in discovered:
-                    link = normalize_url(link)
-                    # Check scope
-                    if not in_scope(base_seed, link, scope_mode):
-                        continue
-                    # Check include/exclude
-                    if not regex_filter(link, include_regex, exclude_regex):
-                        continue
-                    if link not in visited and len(visited) + len(next_layer) < max_urls:
-                        next_layer.add(link)
-            except:
-                continue
-        
-        current_layer = next_layer
 
-        # partial UI update
-        if show_partial_callback:
-            show_partial_callback(results, len(visited), max_urls)
+        # fetch them in parallel
+        tasks = [checker.fetch_and_parse(u) for u in layer_list]
+
+        layer_results = []
+        # Process each result as soon as it completes
+        for coro in as_completed(tasks):
+            res = await coro
+            layer_results.append(res)
+            results.append(res)
+
+            # partial update to UI
+            if show_partial_callback:
+                show_partial_callback(results, len(visited), max_urls)
+
+        # discover links from each result
+        next_layer: Set[str] = set()
+        for row in layer_results:
+            # only discover if final status = "200" or "OK"? Up to you
+            # We'll do it for any 200 + text/html.
+            # We stored final URL in row["Final_URL"] or row["Original_URL"]
+            final_url = row["Final_URL"] or row["Original_URL"]
+            discovered = await discover_links(final_url, checker.session, checker.user_agent)
+
+            for link in discovered:
+                link = normalize_url(link)
+                # if you want to restrict domain or subfolders, do that here
+                # e.g.: if not in_same_domain(seed_urls[0], link): continue
+
+                # also apply include/exclude
+                if not pass_regex_filters(link, include_pattern, exclude_pattern):
+                    continue
+
+                if link not in visited and len(visited) + len(next_layer) < max_urls:
+                    next_layer.add(link)
+
+        current_layer = next_layer
 
     await checker.close()
     return results
 
 
-# ---------------
-# Discover Links
-# ---------------
 async def discover_links(url: str, session: aiohttp.ClientSession, user_agent: str) -> List[str]:
     """
-    Minimal fetch to get raw HTML and parse <a href>.
+    Minimal fetch just to extract <a href> links.
     """
-    headers = {"User-Agent": user_agent}
     out = []
     try:
+        headers = {"User-Agent": user_agent}
         async with session.get(url, headers=headers, ssl=False, allow_redirects=False) as resp:
             if resp.status == 200 and resp.content_type and resp.content_type.startswith("text/html"):
-                html = await resp.text(errors='replace')
+                html = await resp.text(errors="replace")
                 soup = BeautifulSoup(html, "lxml")
                 for a in soup.find_all("a", href=True):
                     abs_link = urljoin(url, a["href"])
@@ -545,167 +390,110 @@ async def discover_links(url: str, session: aiohttp.ClientSession, user_agent: s
         pass
     return out
 
-# ---------------
-# Sitemap
-# ---------------
-def parse_sitemap(url: str) -> List[str]:
-    """
-    Very simple: parse <loc> from a single-level sitemap.
-    """
-    out = []
-    try:
-        resp = requests.get(url, timeout=15)
-        if resp.status_code == 200:
-            import xml.etree.ElementTree as ET
-            root = ET.fromstring(resp.text)
-            for loc_tag in root.findall(".//{*}loc"):
-                if loc_tag.text:
-                    out.append(loc_tag.text.strip())
-    except:
-        pass
-    return out
-
-
-# ---------------
+# ----------------------------------
 # Streamlit UI
-# ---------------
+# ----------------------------------
 def main():
-    st.set_page_config(layout="wide")
-    st.title("Advanced URL Crawler")
+    st.set_page_config(layout="wide")  # allows more horizontal space
+    st.title("Advanced URL Crawler (Layer-based BFS w/ Immediate Updates)")
 
-    # --- Sidebar configuration ---
+    # sidebar config
     st.sidebar.header("Configuration")
-
     concurrency = st.sidebar.slider("Concurrency", 1, 200, 10)
-    user_agent_option = st.sidebar.selectbox("User Agent", list(USER_AGENTS.keys()))
-    user_agent = USER_AGENTS[user_agent_option]
-    respect_robots = st.sidebar.checkbox("Respect robots.txt", value=True)
+    ua_option = st.sidebar.selectbox("User Agent", list(USER_AGENTS.keys()))
+    user_agent = USER_AGENTS[ua_option]
 
-    # Crawl Scope
-    scope_mode = st.sidebar.radio(
-        "Crawl Scope",
-        ["Exact URL Only", "In Subfolder", "Same Subdomain", "All Subdomains"],
-        index=2
-    )
+    include_regex = st.sidebar.text_input("Include Regex (optional)")
+    exclude_regex = st.sidebar.text_input("Exclude Regex (optional)")
 
-    # BFS is the only mode (layer-based), so no chunk mode or BFS depth.
+    st.write("""
+    **Instructions**  
+    - Enter one or more seed URLs below.  
+    - Click "Start Crawl" to begin a BFS with unlimited depth, stopping only if no new pages or at 25k pages.  
+    - Partial results appear as soon as each URL finishes.
+    """)
 
-    # Include/Exclude filters (Regex)
-    st.sidebar.subheader("BFS Regex Filters")
-    include_pattern = st.sidebar.text_input("Include Pattern (optional, regex)", "")
-    exclude_pattern = st.sidebar.text_input("Exclude Pattern (optional, regex)", "")
-
-    # --- Main area for input method ---
-    st.header("Input URLs")
-    input_method = st.radio("Input method", ["Direct Input", "Sitemap"], horizontal=True)
-
-    urls = []
-    if input_method == "Direct Input":
-        st.write("Enter URLs (one per line)")
-        text_input = st.text_area("", "")
-        if text_input.strip():
-            lines = text_input.strip().splitlines()
-            urls = [u.strip() for u in lines if u.strip()]
-    else:
-        # Sitemaps
-        st.write("Enter Sitemap URL")
-        sitemap_val = st.text_input("Sitemap URL", "")
-        if st.button("Fetch Sitemap"):
-            if sitemap_val.strip():
-                sm_urls = parse_sitemap(sitemap_val.strip())
-                st.write(f"Fetched {len(sm_urls)} URLs from sitemap.")
-                urls = sm_urls
-            else:
-                st.warning("Please enter a sitemap URL first.")
-
-    # Start crawl button
+    url_input = st.text_area("Enter seed URLs (one per line)")
     if st.button("Start Crawl"):
-        if not urls:
-            st.warning("No URLs to crawl. Please provide something above.")
+        lines = [l.strip() for l in url_input.splitlines() if l.strip()]
+        if not lines:
+            st.warning("No URLs to crawl.")
             return
 
-        # We'll do BFS on everything from 'urls' as seeds
-        # NOTE: BFS is unlimited depth by default => no BFS depth.
-
-        # Setup partial results placeholders
+        # partial UI placeholders
         progress_placeholder = st.empty()
         table_placeholder = st.empty()
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-        def show_partial_data(res_list, done_count, total_count):
-            # partial updates
+        def partial_update(res_list, done_count, total_count):
             pct = int((done_count / total_count) * 100) if total_count else 100
             progress_placeholder.progress(min(pct, 100))
-            temp_df = pd.DataFrame(res_list)
-            table_placeholder.dataframe(temp_df.tail(10), use_container_width=True)
 
-        checker = URLChecker(
-            user_agent=user_agent,
-            concurrency=concurrency,
-            timeout=DEFAULT_TIMEOUT,
-            respect_robots=respect_robots
-        )
+            # show entire DataFrame w/ scrollable height
+            # so we can see older URLs too.
+            df_temp = pd.DataFrame(res_list)
+            table_placeholder.dataframe(df_temp, height=600)  # scrollable table
+
+        checker = URLChecker(user_agent=user_agent, concurrency=concurrency, timeout=DEFAULT_TIMEOUT)
 
         final_results = loop.run_until_complete(
             layer_bfs_crawl(
-                seed_urls=urls,
+                seed_urls=lines,
                 checker=checker,
                 max_urls=DEFAULT_MAX_URLS,
-                scope_mode=scope_mode,
-                include_regex=include_pattern,
-                exclude_regex=exclude_pattern,
-                show_partial_callback=show_partial_data
+                include_pattern=include_regex,
+                exclude_pattern=exclude_regex,
+                show_partial_callback=partial_update
             )
         )
         loop.close()
         progress_placeholder.empty()
 
         if not final_results:
-            st.warning("No results found or BFS ended with no data.")
+            st.warning("No results found.")
             return
 
         df = pd.DataFrame(final_results)
-
-        # Display final
-        st.subheader("Crawl Results")
-        st.dataframe(df, use_container_width=True)
+        st.subheader("Final Results")
+        st.dataframe(df, height=600)
 
         # CSV download
         csv_data = df.to_csv(index=False).encode("utf-8")
-        now_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+        now = datetime.now().strftime("%Y%m%d_%H%M%S")
         st.download_button(
-            label="Download CSV",
-            data=csv_data,
-            file_name=f"crawl_results_{now_str}.csv",
+            "Download CSV",
+            csv_data,
+            file_name=f"crawl_results_{now}.csv",
             mime="text/csv"
         )
 
-        # Summaries
+        # optional summary
         show_summary(df)
 
 
 def show_summary(df: pd.DataFrame):
     st.subheader("Summary")
-    st.write("**Initial Status Code Distribution**")
     init_counts = df["Initial_Status_Code"].value_counts(dropna=False)
+    st.write("**Initial Status Code Distribution**:")
     for code, cnt in init_counts.items():
         st.write(f"{code}: {cnt}")
 
-    st.write("**Final Status Code Distribution**")
     final_counts = df["Final_Status_Code"].value_counts(dropna=False)
+    st.write("**Final Status Code Distribution**:")
     for code, cnt in final_counts.items():
         st.write(f"{code}: {cnt}")
 
+    block_counts = df["Is_Blocked_by_Robots"].value_counts(dropna=False) \
+        if "Is_Blocked_by_Robots" in df.columns else {}
     st.write("**Blocked by Robots.txt?**")
-    block_counts = df["Is_Blocked_by_Robots"].value_counts(dropna=False)
     for val, cnt in block_counts.items():
         st.write(f"{val}: {cnt}")
 
+    indexable_counts = df["Is_Indexable"].value_counts(dropna=False)
     st.write("**Indexable?**")
-    idx_counts = df["Is_Indexable"].value_counts(dropna=False)
-    for val, cnt in idx_counts.items():
+    for val, cnt in indexable_counts.items():
         st.write(f"{val}: {cnt}")
 
 
