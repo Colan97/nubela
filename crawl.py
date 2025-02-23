@@ -751,7 +751,7 @@ def main():
     if do_bfs:
         bfs_seed_url = st.text_input("Enter URL")
 
-    if st.button("Run Checks"):
+    if st.button("Start"):
         if do_bfs and not bfs_seed_url.strip():
             st.warning("You selected BFS but did not provide a seed URL.")
             return
