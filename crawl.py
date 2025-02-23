@@ -749,7 +749,7 @@ def main():
     do_bfs = st.checkbox("Spider")
     bfs_seed_url = ""
     if do_bfs:
-        bfs_seed_url = st.text_input("Seed URL for BFS")
+        bfs_seed_url = st.text_input("Enter URL")
 
     if st.button("Run Checks"):
         if do_bfs and not bfs_seed_url.strip():
