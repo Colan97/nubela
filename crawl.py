@@ -64,9 +64,6 @@ USER_AGENTS = {
 }
 
 
-# --------------------------
-# Helper: Remove any #fragment
-# --------------------------
 def normalize_url(url: str) -> str:
     """
     Remove #fragment so that URLs differing only by anchor are treated the same.
@@ -75,9 +72,6 @@ def normalize_url(url: str) -> str:
     return urlunparse(parsed._replace(fragment=""))
 
 
-# -------------------------------------------------------------------
-# URL Checker Class
-# -------------------------------------------------------------------
 class URLChecker:
     """
     A class that checks various SEO and technical aspects of URLs.
@@ -94,9 +88,6 @@ class URLChecker:
         self.semaphore = None
 
     async def setup(self):
-        """
-        Prepare an aiohttp session with concurrency limits.
-        """
         self.connector = aiohttp.TCPConnector(
             limit=self.max_concurrency,
             ttl_dns_cache=300,
@@ -116,13 +107,9 @@ class URLChecker:
         self.semaphore = asyncio.Semaphore(self.max_concurrency)
 
     async def close(self):
-        """Close the aiohttp session."""
         if self.session:
             await self.session.close()
 
-    # -------------------------
-    # Robots.txt check
-    # -------------------------
     async def check_robots_txt(self, url: str) -> Tuple[bool, str]:
         parsed = urlparse(url)
         base_url = f"{parsed.scheme}://{parsed.netloc}"
@@ -143,17 +130,11 @@ class URLChecker:
 
         robots_content = self.robots_cache.get(base_url)
         if not robots_content:
-            # No robots.txt => assume allowed
             return True, "N/A"
 
-        # Parse robots
         return self.parse_robots(robots_content, path)
 
     def parse_robots(self, robots_content: str, path: str) -> Tuple[bool, str]:
-        """
-        Very basic parse: look for user-agent: * or matching agent lines,
-        then check Disallow. Ignore 'Allow:' lines for simplicity.
-        """
         lines = robots_content.splitlines()
         is_relevant_section = False
         block_rule = "N/A"
@@ -184,22 +165,13 @@ class URLChecker:
 
         return True, "N/A"
 
-    # -------------------------
-    # Main Fetch & Parse
-    # -------------------------
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=3, max=10))
     async def fetch_and_parse(self, url: str, known_sitemap_date: str = "") -> Dict:
-        """
-        Fetch a URL (no auto-redirect), follow up to MAX_REDIRECTS manually.
-        known_sitemap_date: lastmod from sitemap if available
-        Return a dict with SEO data & last-modified info.
-        """
         url = normalize_url(url)
         headers = {"User-Agent": self.user_agent}
 
         async with self.semaphore:
             try:
-                # Check robots
                 is_allowed, block_rule = await self.check_robots_txt(url)
 
                 async with self.session.get(url, headers=headers, ssl=False, allow_redirects=False) as resp:
@@ -208,7 +180,6 @@ class URLChecker:
                     location = resp.headers.get("Location")
                     final_url = str(resp.url)
 
-                    # Follow redirect chain if needed
                     if initial_status in (301, 302, 307, 308) and location:
                         final_url, final_status, final_html, final_headers = await self.follow_redirect_chain(url, headers)
                         if isinstance(final_status, int) and final_status == 200 and final_html:
@@ -236,7 +207,6 @@ class URLChecker:
                                 known_sitemap_date=known_sitemap_date
                             )
                     else:
-                        # Not a redirect => parse if 200 & HTML
                         if initial_status == 200 and self.is_html_response(resp):
                             html_content = await resp.text(encoding='utf-8', errors='replace')
                             return await self.parse_html(
@@ -268,9 +238,6 @@ class URLChecker:
                 return self.create_error_response(url, "Error", str(e), False, known_sitemap_date)
 
     async def follow_redirect_chain(self, start_url: str, headers: Dict) -> Tuple[str, int, str, Dict]:
-        """
-        Follow up to MAX_REDIRECTS. Return (final_url, final_status, final_html, final_headers).
-        """
         current_url = normalize_url(start_url)
         html_content = None
         final_headers = {}
@@ -323,7 +290,6 @@ class URLChecker:
         combined_robots = f"{meta_robots.lower()} {x_robots_tag.lower()}"
         has_noindex = "noindex" in combined_robots
 
-        # Evaluate indexability
         canonical_matches = (not canonical_url) or (canonical_url == original_url)
         is_indexable = (status_code == 200 and is_allowed and not has_noindex and canonical_matches)
 
@@ -339,7 +305,6 @@ class URLChecker:
         if not reason_parts:
             reason_parts.append("Page is indexable")
 
-        # Last-Modified from HTTP header
         last_modified_header = headers.get("Last-Modified", "")
 
         data = {
@@ -362,7 +327,7 @@ class URLChecker:
             "Is_Indexable": "Yes" if is_indexable else "No",
             "Indexability_Reason": "; ".join(reason_parts),
             "HTTP_Last_Modified": last_modified_header,
-            "Sitemap_LastMod": known_sitemap_date,  # if available
+            "Sitemap_LastMod": known_sitemap_date,
             "Timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         }
         return data
@@ -448,9 +413,6 @@ class URLChecker:
             "Timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         }
 
-    # --------------------------------------------
-    # Helpers
-    # --------------------------------------------
     @staticmethod
     def is_html_response(resp: aiohttp.ClientResponse) -> bool:
         ctype = resp.content_type
@@ -505,79 +467,73 @@ class URLChecker:
         return ""
 
 
-# -----------------------------
-# BFS Crawling (with optional depth)
-# -----------------------------
 async def bfs_crawl(
-    seed_urls: List[Tuple[str, str]],  # list of (url, lastmod) pairs
+    seed_url: str,
     checker: URLChecker,
-    max_depth: Optional[int] = None,
-    max_urls: int = DEFAULT_MAX_URLS,
-    show_partial_callback=None
+    max_depth: Optional[int],
+    max_urls: int,
+    show_partial_callback=None,
+    sitemap_seed_pairs: List[Tuple[str, str]] = None
 ) -> List[Dict]:
     """
-    Perform BFS from multiple seed URLs (each with an optional known sitemap lastmod).
+    BFS from a single seed URL + optionally additional seeds (sitemap_seed_pairs).
     If max_depth is None or 0 => unlimited depth.
     """
     visited: Set[str] = set()
     queue = deque()
     results = []
 
-    # seed_urls is a list of (url, lastmod).
-    # We'll parse domain from the first seed (assuming single domain BFS),
-    # or skip domain-checking if you prefer multi-domain BFS.
-    if not seed_urls:
-        return []
+    seed_url = normalize_url(seed_url.strip())
+    seed_domain = urlparse(seed_url).netloc.lower()
+    depth_init = 0
 
-    # Let's assume we do domain-limited BFS based on the first seed:
-    first_domain = urlparse(seed_urls[0][0]).netloc.lower()
+    # Add the main BFS seed at depth=0 (with no known lastmod).
+    queue.append((seed_url, "", depth_init))
 
-    # Populate queue with all seeds at depth=0
-    for (u, lm) in seed_urls:
-        queue.append((normalize_url(u.strip()), lm, 0))
+    # If user wants to include sitemap pairs as BFS seeds as well:
+    if sitemap_seed_pairs:
+        for (u, lm) in sitemap_seed_pairs:
+            norm = normalize_url(u)
+            # Only add if domain is the same as our BFS domain
+            if urlparse(norm).netloc.lower() == seed_domain:
+                queue.append((norm, lm, depth_init))
 
     await checker.setup()
 
     while queue and len(visited) < max_urls:
         url, known_sitemap_date, depth = queue.popleft()
-
         if url in visited:
             continue
         visited.add(url)
 
         try:
-            # BFS uses the known sitemap lastmod if present
             row = await checker.fetch_and_parse(url, known_sitemap_date=known_sitemap_date)
             results.append(row)
 
-            # Only discover new links if we haven't hit the depth limit
-            if max_depth is None or max_depth == 0 or depth < max_depth:
+            # BFS depth check
+            if not max_depth or depth < max_depth:
                 discovered_links = await discover_links(url, checker.session, checker.user_agent)
                 for link in discovered_links:
                     link_norm = normalize_url(link)
-                    # domain-limited BFS
-                    if urlparse(link_norm).netloc.lower() == first_domain:
+                    if urlparse(link_norm).netloc.lower() == seed_domain:
                         if link_norm not in visited:
                             queue.append((link_norm, "", depth + 1))
 
         except Exception as e:
             logging.error(f"BFS error on {url}: {e}")
 
-        # Partial UI update
+        # partial update
         if show_partial_callback and len(results) % 10 == 0:
             show_partial_callback(results, len(visited), max_urls)
 
     await checker.close()
     return results
 
+
 async def discover_links(url: str, session: aiohttp.ClientSession, user_agent: str) -> List[str]:
-    """
-    Minimal fetch to parse <a href> for BFS link discovery.
-    """
     headers = {"User-Agent": user_agent}
     url = normalize_url(url)
     links = []
-
     try:
         async with session.get(url, headers=headers, ssl=False, allow_redirects=False) as resp:
             if resp.status == 200 and resp.content_type and resp.content_type.startswith("text/html"):
@@ -588,26 +544,19 @@ async def discover_links(url: str, session: aiohttp.ClientSession, user_agent: s
                     links.append(abs_link)
     except:
         pass
-
     return links
 
 
-# -----------------------------
-# Chunked Processing (Non-BFS)
-# -----------------------------
 async def process_urls_chunked(
     url_pairs: List[Tuple[str, str]],
     checker: URLChecker,
     show_partial_callback=None
 ) -> List[Dict]:
-    """
-    url_pairs: list of (url, lastmod from sitemap if any)
-    """
     results = []
     total = len(url_pairs)
-    # Deduplicate by URL
     seen_urls = set()
     normalized_pairs = []
+
     for (u, lm) in url_pairs:
         nu = normalize_url(u.strip())
         if nu not in seen_urls:
@@ -638,13 +587,9 @@ async def process_urls_chunked(
     return results
 
 
-# -----------------------------
-# Sitemap Parsing
-# -----------------------------
 def parse_sitemap(url: str) -> List[Tuple[str, str]]:
     """
-    Fetch the sitemap URL, parse <loc> and <lastmod>, return list of (loc, lastmod).
-    If you have a <sitemapindex>, you'd need recursion. This example just handles <urlset>.
+    Returns list of (loc, lastmod).
     """
     results = []
     try:
@@ -664,17 +609,12 @@ def parse_sitemap(url: str) -> List[Tuple[str, str]]:
     return results
 
 
-# -----------------------------
-# Streamlit UI
-# -----------------------------
 def main():
-    st.title("Async SEO Crawler (BFS or Chunked)")
+    st.title("Async SEO Crawler with BFS or Chunked Mode")
 
-    # --- Sidebar or Main Options ---
     st.subheader("Configuration")
-    concurrency = st.slider("Concurrency (parallel requests)", 1, 200, 10)
+    concurrency = st.slider("Concurrency (Parallel Requests)", 1, 200, 10)
 
-    # User-Agent
     ua_options = list(USER_AGENTS.keys()) + ["Custom"]
     chosen_ua = st.selectbox("Select User Agent", ua_options, index=0)
     if chosen_ua == "Custom":
@@ -684,25 +624,27 @@ def main():
         user_agent = USER_AGENTS[chosen_ua]
 
     # BFS or Not
-    do_bfs = st.checkbox("Enable BFS (Site Crawl)?", value=False)
-
+    do_bfs = st.checkbox("Enable BFS Crawl?")
+    bfs_seed_url = ""
     bfs_depth = 0
     include_sitemaps_in_bfs = False
+
     if do_bfs:
         st.markdown("**BFS Options**")
+        bfs_seed_url = st.text_input("BFS Seed URL", "")
         bfs_depth = st.number_input("Max BFS Depth (0 = unlimited)", min_value=0, max_value=9999, value=0)
         include_sitemaps_in_bfs = st.checkbox("Include Sitemap URLs in BFS?")
 
-    # Input: Paste or File
-    st.subheader("Enter URLs or Load from File")
+    # Input method (for chunk mode or BFS extras, but BFS seed is separate)
+    st.subheader("Enter URLs / Upload")
     input_method = st.selectbox("Input Method", ["Paste", "Upload File"])
     raw_urls = []
     if input_method == "Paste":
-        text_input = st.text_area("Paste URLs (space or line-separated)", "")
+        text_input = st.text_area("Paste URLs (space/line separated)", "")
         if text_input.strip():
             raw_urls = re.split(r"\s+", text_input.strip())
     else:
-        uploaded = st.file_uploader("Upload a .txt or .csv with URLs", type=["txt", "csv"])
+        uploaded = st.file_uploader("Upload .txt or .csv with URLs", type=["txt","csv"])
         if uploaded:
             content = uploaded.read().decode("utf-8", errors="replace")
             raw_urls = re.split(r"\s+", content.strip())
@@ -711,174 +653,116 @@ def main():
         st.session_state['input_urls'] = []
 
     if raw_urls:
-        # Convert raw strings to (url, lastmod="") pairs
         new_pairs = [(u.strip(), "") for u in raw_urls if u.strip()]
-        # Deduplicate & store in session
         st.session_state['input_urls'] = list(set(st.session_state['input_urls'] + new_pairs))
 
-    st.write(f"Total input URLs (current session): {len(st.session_state['input_urls'])}")
+    st.write(f"Total input URLs (Session): {len(st.session_state['input_urls'])}")
 
     # Sitemaps
     st.subheader("Sitemap")
-    sitemap_url = st.text_input("Optional: Enter a Sitemap URL to parse", "")
+    sitemap_url = st.text_input("Optional Sitemap URL", "")
     if 'sitemap_urls' not in st.session_state:
         st.session_state['sitemap_urls'] = []
 
     if st.button("Fetch Sitemap"):
         if sitemap_url.strip():
             sm_pairs = parse_sitemap(sitemap_url.strip())
-            # add to session
-            # sm_pairs is list of (loc, lastmod)
             st.session_state['sitemap_urls'] = list(set(st.session_state['sitemap_urls'] + sm_pairs))
             st.write(f"Fetched {len(sm_pairs)} URLs from sitemap.")
         else:
-            st.warning("Please enter a sitemap URL first.")
+            st.warning("Enter a sitemap URL first.")
 
-    st.write(f"Total sitemap URLs (current session): {len(st.session_state['sitemap_urls'])}")
+    st.write(f"Total sitemap URLs (Session): {len(st.session_state['sitemap_urls'])}")
 
-    # Combine user-provided + sitemap pairs (for chunked mode if BFS not used)
+    # Combined pairs for chunk mode
     combined_pairs = st.session_state['input_urls'] + st.session_state['sitemap_urls']
     if len(combined_pairs) > DEFAULT_MAX_URLS:
         combined_pairs = combined_pairs[:DEFAULT_MAX_URLS]
     st.write(f"Combined total (cap 25k): {len(combined_pairs)}")
 
     st.subheader("Run Crawl/Checks")
-
     run_button = st.button("Run Checks")
 
     if run_button:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        # Single placeholder for partial updates
+        table_placeholder = st.empty()
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        def show_partial_data(res_list, done_count, total_count):
+            pct = int((done_count / total_count) * 100) if total_count else 100
+            progress_bar.progress(min(pct, 100))
+            status_text.write(f"Processed {done_count} of {total_count} URLs so far...")
+            temp_df = pd.DataFrame(res_list)
+            table_placeholder.dataframe(temp_df, use_container_width=True)
+
+        checker = URLChecker(user_agent=user_agent, concurrency=concurrency, timeout=DEFAULT_TIMEOUT)
+
+        final_results = []
+
         if do_bfs:
-            # BFS mode
-            # 1) We need at least one "seed" URL for BFS
-            if not combined_pairs:
-                st.warning("No seed URL found. Please provide at least one URL or a sitemap entry.")
+            # BFS mode requires a seed URL
+            if not bfs_seed_url.strip():
+                st.warning("You chose BFS but didn't provide a seed URL.")
                 return
 
-            # We'll pick the FIRST url in combined_pairs as the main BFS seed if the user wants single-seed BFS
-            # or we can BFS from all combined if we want multi-seed BFS. Let's do multi-seed BFS:
-            # If user wants "Include Sitemaps in BFS," we keep them in BFS seeds as well.
-            # Otherwise, we exclude the sitemap pairs if user unchecks.
-            # But we'll keep it simple: if "Include Sitemaps in BFS" is false, only BFS from input_urls.
-            # If it's true, BFS from everything.
-            # BFS depth 0 => unlimited
-            if include_sitemaps_in_bfs:
-                seeds_for_bfs = combined_pairs
-            else:
-                seeds_for_bfs = st.session_state['input_urls']  # user input only
-
-            if not seeds_for_bfs:
-                st.warning("No BFS seeds available after excluding sitemaps. Please add some URLs.")
-                return
-
-            # We'll do BFS from all seeds (multi-seed BFS).
-            # BFS only crawls within the domain of the first seed, as coded in bfs_crawl.
-            # If seeds are from multiple domains, we'd need more advanced code to do multi-domain BFS.
-            # But we'll keep the single-domain approach for simplicity.
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            # Single placeholder to keep updating
-            table_placeholder = st.empty()
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-
-            def show_partial_data(res_list, done_count, total_count):
-                pct = int((done_count / total_count) * 100) if total_count else 100
-                progress_bar.progress(min(pct, 100))
-                status_text.write(f"Processed {done_count} of {total_count} URLs...")
-                temp_df = pd.DataFrame(res_list)
-                table_placeholder.dataframe(temp_df, use_container_width=True)
-
-            checker = URLChecker(user_agent=user_agent, concurrency=concurrency, timeout=DEFAULT_TIMEOUT)
-
-            # BFS Depth logic: if bfs_depth=0 => None
+            # BFS Depth logic (0 => unlimited => pass None)
             final_bfs_depth = None if bfs_depth == 0 else bfs_depth
+
+            # If user wants sitemaps included in BFS, pass them. Otherwise pass empty list.
+            sitemap_seed_pairs = st.session_state['sitemap_urls'] if include_sitemaps_in_bfs else []
 
             final_results = loop.run_until_complete(
                 bfs_crawl(
-                    seed_urls=seeds_for_bfs,       # (url, lastmod)
+                    seed_url=bfs_seed_url.strip(),
                     checker=checker,
                     max_depth=final_bfs_depth,
                     max_urls=DEFAULT_MAX_URLS,
-                    show_partial_callback=lambda r, c, t: show_partial_data(r, c, t)
+                    show_partial_callback=show_partial_data,
+                    sitemap_seed_pairs=sitemap_seed_pairs
                 )
             )
-
-            loop.close()
             progress_bar.empty()
             status_text.write("BFS Completed!")
-
-            if not final_results:
-                st.warning("No results found.")
-                return
-
-            df = pd.DataFrame(final_results)
-            st.subheader("Final Results")
-            st.dataframe(df, use_container_width=True)
-
-            csv_data = df.to_csv(index=False).encode("utf-8")
-            now_str = datetime.now().strftime('%Y%m%d_%H%M%S')
-            st.download_button(
-                label="Download CSV",
-                data=csv_data,
-                file_name=f"url_check_results_{now_str}.csv",
-                mime="text/csv"
-            )
-
-            show_summary(df)
-
         else:
-            # Chunked mode
+            # chunk mode
             if not combined_pairs:
                 st.warning("No URLs to process. Please add some URLs or a sitemap.")
                 return
-
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            table_placeholder = st.empty()
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-
-            def show_partial_data(res_list, done_count, total_count):
-                pct = int((done_count / total_count) * 100) if total_count else 100
-                progress_bar.progress(min(pct, 100))
-                status_text.write(f"Processed {done_count} of {total_count} URLs...")
-                temp_df = pd.DataFrame(res_list)
-                table_placeholder.dataframe(temp_df, use_container_width=True)
-
-            checker = URLChecker(user_agent=user_agent, concurrency=concurrency, timeout=DEFAULT_TIMEOUT)
 
             final_results = loop.run_until_complete(
                 process_urls_chunked(
                     combined_pairs,
                     checker,
-                    show_partial_callback=lambda r, c, t: show_partial_data(r, c, t)
+                    show_partial_callback=show_partial_data
                 )
             )
-
-            loop.close()
             progress_bar.empty()
             status_text.write("Checks Completed!")
 
-            if not final_results:
-                st.warning("No results found.")
-                return
+        loop.close()
 
-            df = pd.DataFrame(final_results)
-            st.subheader("Final Results")
-            st.dataframe(df, use_container_width=True)
+        if not final_results:
+            st.warning("No results found.")
+            return
 
-            csv_data = df.to_csv(index=False).encode("utf-8")
-            now_str = datetime.now().strftime('%Y%m%d_%H%M%S')
-            st.download_button(
-                label="Download CSV",
-                data=csv_data,
-                file_name=f"url_check_results_{now_str}.csv",
-                mime="text/csv"
-            )
+        df = pd.DataFrame(final_results)
+        st.subheader("Final Results")
+        st.dataframe(df, use_container_width=True)
 
-            show_summary(df)
+        csv_data = df.to_csv(index=False).encode("utf-8")
+        now_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+        st.download_button(
+            label="Download CSV",
+            data=csv_data,
+            file_name=f"url_check_results_{now_str}.csv",
+            mime="text/csv"
+        )
+
+        show_summary(df)
 
 
 def show_summary(df: pd.DataFrame):
