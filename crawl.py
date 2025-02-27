@@ -530,7 +530,7 @@ async def chunk_process(urls: List[str], checker: URLChecker, show_partial_callb
 # -----------------------------
 def main():
     st.set_page_config(layout="wide")
-    st.title("Crawler with Semaphore Concurrency + Retry Logic")
+    st.title("Lazy Crawler")
 
     st.sidebar.header("Configuration")
     concurrency = st.sidebar.slider("Concurrency", 1, 50, 10)
