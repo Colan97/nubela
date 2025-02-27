@@ -549,7 +549,7 @@ def main():
         st.subheader("Spider (BFS) Mode")
         text_input = st.text_area("Seed URLs (one per line)")
         user_urls = [x.strip() for x in text_input.splitlines() if x.strip()]
-        include_sitemaps = st.checkbox("Include Sitemaps (Multiple Sitemaps allowed)")
+        include_sitemaps = st.checkbox("Include Sitemaps")
         user_sitemaps = []
         if include_sitemaps:
             sitemaps_text = st.text_area("Sitemap URLs", "")
