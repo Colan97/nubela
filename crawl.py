@@ -568,7 +568,7 @@ def main():
                     user_sitemaps = sitemap_urls
                 st.write(f"Collected {len(user_sitemaps)} URLs from sitemaps.")
         with st.expander("Advanced Filters (Optional)"):
-            st.write("Regex to include or exclude discovered URLs in BFS.")
+            st.write("Regex to include or exclude discovered URLs in Crawl.")
             include_pattern = st.text_input("Include Regex", "")
             exclude_pattern = st.text_input("Exclude Regex", "")
         if st.button("Start BFS Spider"):
