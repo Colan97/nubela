@@ -92,29 +92,6 @@ async def process_sitemaps(sitemap_urls: List[str], show_partial_callback=None) 
             show_partial_callback(all_urls)
     return all_urls
 
-def in_scope(base_url: str, test_url: str, scope_mode: str) -> bool:
-    base_parsed = urlparse(base_url)
-    test_parsed = urlparse(test_url)
-    if test_parsed.scheme != base_parsed.scheme:
-        return False
-    base_netloc = base_parsed.netloc.lower()
-    test_netloc = test_parsed.netloc.lower()
-    if scope_mode == "Exact URL Only":
-        return (test_url == base_url)
-    elif scope_mode == "In Subfolder":
-        if test_netloc != base_netloc:
-            return False
-        return test_parsed.path.startswith(base_parsed.path)
-    elif scope_mode == "Same Subdomain":
-        return (test_netloc == base_netloc)
-    elif scope_mode == "All Subdomains":
-        parts = base_netloc.split('.')
-        if len(parts) <= 1:
-            return (test_netloc == base_netloc)
-        root_domain = '.'.join(parts[-2:])
-        return test_netloc.endswith(root_domain)
-    return False
-
 def compile_filters(include_pattern: str, exclude_pattern: str):
     inc = re.compile(include_pattern) if include_pattern else None
     exc = re.compile(exclude_pattern) if exclude_pattern else None
@@ -129,13 +106,7 @@ def regex_filter(url: str, inc, exc) -> bool:
 
 def update_redirect_label(data: Dict, original_url: str) -> Dict:
     """
-    Updates the Final_Status_Type field according to the following rules:
-      - If final URL is the same as original URL → "No Redirect"
-      - If redirected and final status is 200 → "Redirecting to Live Page"
-      - If redirected and final status is 301/302 → "Temporary/Permanent Redirect"
-      - If redirected and final status is 404 → "Redirecting to Not Found Page"
-      - If redirected and final status is 500 → "Redirecting to Server Error Page"
-      - Otherwise, display "Status {code}"
+    Updates the Final_Status_Type field.
     """
     final_url = data.get("Final_URL", "")
     final_status = data.get("Final_Status_Code", "")
@@ -256,6 +227,7 @@ class URLChecker:
         async with self.semaphore:
             data = {
                 "Original_URL": url,
+                "Content_Type": "",
                 "Initial_Status_Code": "",
                 "Initial_Status_Type": "",
                 "Final_URL": "",
@@ -290,6 +262,8 @@ class URLChecker:
             headers = {"User-Agent": self.user_agent}
             try:
                 async with self.session.get(url, headers=headers, ssl=False, allow_redirects=False) as resp:
+                    # Add Content-Type field before status codes
+                    data["Content_Type"] = resp.headers.get("Content-Type", "")
                     init_str = str(resp.status)
                     data["Initial_Status_Code"] = init_str
                     data["Initial_Status_Type"] = self.status_label(resp.status)
@@ -425,59 +399,48 @@ class URLChecker:
         return data
 
 # -----------------------------
-# BFS (Layer-Based) + Minor Rate-Limit
+# Dynamic Frontier Crawl (Using Async PriorityQueue)
 # -----------------------------
-async def layer_bfs(
-    seeds: List[str],
+async def dynamic_frontier_crawl(
+    seed_url: str,
     checker: URLChecker,
-    scope_mode: str,
     include_regex: Optional[str],
     exclude_regex: Optional[str],
     show_partial_callback=None
 ) -> List[Dict]:
     visited: Set[str] = set()
-    current_layer = set(normalize_url(u) for u in seeds if u.strip())
     results = []
+    # PriorityQueue items: (depth, url)
+    frontier = asyncio.PriorityQueue()
+    await frontier.put((0, seed_url))
+    base_netloc = urlparse(seed_url).netloc.lower()
     inc, exc = compile_filters(include_regex, exclude_regex)
+
     await checker.setup()
-
-    while current_layer and len(visited) < DEFAULT_MAX_URLS:
-        layer_list = list(current_layer)
-        current_layer.clear()
-        tasks = [checker.fetch_and_parse(u) for u in layer_list]
-        layer_results = await asyncio.gather(*tasks, return_exceptions=True)
-        valid = [r for r in layer_results if isinstance(r, dict)]
-        results.extend(valid)
-        for u in layer_list:
-            visited.add(u)
-
-        next_layer = set()
-        for row in valid:
-            try:
-                final_url = row.get("Final_URL") or row.get("Original_URL")
-                if not final_url:
-                    continue
-                discovered_links = await discover_links(final_url, checker.session, checker.user_agent)
-                base_seed = seeds[0]
-                for link in discovered_links:
-                    link_n = normalize_url(link)
-                    if not in_scope(base_seed, link_n, scope_mode):
-                        continue
-                    if not regex_filter(link_n, inc, exc):
-                        continue
-                    if link_n not in visited and (len(visited) + len(next_layer) < DEFAULT_MAX_URLS):
-                        next_layer.add(link_n)
-            except Exception as e:
-                logging.error(f"BFS discovery error: {e}")
-                continue
-
-        discovered_count = len(visited) + len(next_layer)
-        crawled_count = len(visited)
+    while not frontier.empty() and len(visited) < DEFAULT_MAX_URLS:
+        depth, url = await frontier.get()
+        norm_url = normalize_url(url)
+        if norm_url in visited:
+            continue
+        visited.add(norm_url)
+        result = await checker.fetch_and_parse(norm_url)
+        results.append(result)
         if show_partial_callback:
+            crawled_count = len(visited)
+            discovered_count = crawled_count + frontier.qsize()
             show_partial_callback(results, crawled_count, discovered_count)
-        # Removed the sleep call here
-        current_layer = next_layer
-
+        # Discover new links from the current page
+        discovered_links = await discover_links(norm_url, checker.session, checker.user_agent)
+        for link in discovered_links:
+            norm_link = normalize_url(link)
+            parsed_link = urlparse(norm_link)
+            # Crawl only internal URLs (matching the seed's netloc)
+            if parsed_link.netloc.lower() != base_netloc:
+                continue
+            if not regex_filter(norm_link, inc, exc):
+                continue
+            if norm_link not in visited:
+                await frontier.put((depth + 1, norm_link))
     await checker.close()
     return results
 
@@ -530,29 +493,24 @@ async def chunk_process(urls: List[str], checker: URLChecker, show_partial_callb
 # -----------------------------
 def main():
     st.set_page_config(layout="wide")
-    st.title("Lazy Crawler")
+    st.title("Lazy Crawler - Dynamic Frontier Mode")
 
     st.sidebar.header("Configuration")
     concurrency = st.sidebar.slider("Urls/s", 1, 50, 10)
     ua_choice = st.sidebar.selectbox("User Agent", list(USER_AGENTS.keys()))
     user_agent = USER_AGENTS[ua_choice]
     respect_robots = st.sidebar.checkbox("Respect robots.txt", value=True)
-    scope_mode = st.sidebar.radio(
-        "Crawl Scope",
-        ["Exact URL Only", "In Subfolder", "Same Subdomain", "All Subdomains"],
-        index=2
-    )
-    mode = st.radio("Select Mode", ["Spider (BFS)", "List", "Sitemap"], horizontal=True)
+    mode = st.radio("Select Mode", ["Dynamic Frontier", "List", "Sitemap"], horizontal=True)
     st.write("----")
 
-    if mode == "Spider (BFS)":
-        st.subheader("Spider Mode")
-        text_input = st.text_area("Seed URLs (one per line)")
-        user_urls = [x.strip() for x in text_input.splitlines() if x.strip()]
+    if mode == "Dynamic Frontier":
+        st.subheader("Dynamic Frontier Spider")
+        # Only one seed URL is allowed in this mode
+        seed_url = st.text_input("Seed URL", placeholder="Enter a single URL")
         include_sitemaps = st.checkbox("Include Sitemaps")
-        user_sitemaps = []
+        sitemap_urls = []
         if include_sitemaps:
-            sitemaps_text = st.text_area("Sitemap URLs", "")
+            sitemaps_text = st.text_area("Sitemap URLs (one per line)", "")
             if sitemaps_text.strip():
                 raw_sitemaps = [s.strip() for s in sitemaps_text.splitlines() if s.strip()]
                 with st.expander("Discovered Sitemap URLs", expanded=True):
@@ -560,23 +518,22 @@ def main():
                     def show_partial_sitemap(all_urls):
                         df_temp = pd.DataFrame(all_urls, columns=["Discovered URLs"])
                         table_ph.dataframe(df_temp, height=500, use_container_width=True)
-                    # Process sitemaps concurrently (partial results will update the table)
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     sitemap_urls = loop.run_until_complete(process_sitemaps(raw_sitemaps, show_partial_callback=show_partial_sitemap))
                     loop.close()
-                    user_sitemaps = sitemap_urls
-                st.write(f"Collected {len(user_sitemaps)} URLs from sitemaps.")
+                    st.write(f"Collected {len(sitemap_urls)} URLs from sitemaps.")
         with st.expander("Advanced Filters (Optional)"):
             st.write("Regex to include or exclude discovered URLs in Crawl.")
             include_pattern = st.text_input("Include Regex", "")
             exclude_pattern = st.text_input("Exclude Regex", "")
-        if st.button("Start BFS Spider"):
-            # Immediately combine seed URLs with whatever sitemap URLs have been discovered so far.
-            seeds = user_urls + user_sitemaps
-            if not seeds:
-                st.warning("No BFS seeds provided.")
+        if st.button("Start Dynamic Crawl"):
+            if not seed_url.strip():
+                st.warning("No seed URL provided.")
                 return
+            # Combine the seed URL with sitemap URLs (if any)
+            seeds = [seed_url.strip()] + sitemap_urls
+            # For dynamic frontier, we only use the primary seed (first URL)
             progress_ph = st.empty()
             progress_bar = st.progress(0.0)
             with st.expander("Intermediate Results", expanded=True):
@@ -591,16 +548,14 @@ def main():
                 progress_ph.write(
                     f"Completed {crawled_count} of {discovered_count} ({pct:.2f}%) → {remain} Remaining"
                 )
-                # Update the table every 20 URLs or when complete.
                 if crawled_count % 20 == 0 or crawled_count == discovered_count:
                     df_temp = pd.DataFrame(res_list)
                     table_ph.dataframe(df_temp, height=500, use_container_width=True)
             checker = URLChecker(user_agent, concurrency, DEFAULT_TIMEOUT, respect_robots)
             results = loop.run_until_complete(
-                layer_bfs(
-                    seeds=seeds,
+                dynamic_frontier_crawl(
+                    seed_url=seed_url.strip(),
                     checker=checker,
-                    scope_mode=scope_mode,
                     include_regex=include_pattern,
                     exclude_regex=exclude_pattern,
                     show_partial_callback=show_partial_data
@@ -608,17 +563,17 @@ def main():
             )
             loop.close()
             if not results:
-                st.warning("No results from BFS.")
+                st.warning("No results from Dynamic Crawl.")
                 return
             df = pd.DataFrame(results)
-            st.subheader("BFS Results")
+            st.subheader("Dynamic Frontier Crawl Results")
             st.dataframe(df, use_container_width=True)
             csv_data = df.to_csv(index=False).encode("utf-8")
             now_str = datetime.now().strftime('%Y%m%d_%H%M%S')
             st.download_button(
                 label="Download CSV",
                 data=csv_data,
-                file_name=f"bfs_{now_str}.csv",
+                file_name=f"dynamic_{now_str}.csv",
                 mime="text/csv"
             )
             show_summary(df)
