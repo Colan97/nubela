@@ -533,7 +533,7 @@ def main():
     st.title("Lazy Crawler")
 
     st.sidebar.header("Configuration")
-    concurrency = st.sidebar.slider("Concurrency", 1, 50, 10)
+    concurrency = st.sidebar.slider("Urls/s", 1, 50, 10)
     ua_choice = st.sidebar.selectbox("User Agent", list(USER_AGENTS.keys()))
     user_agent = USER_AGENTS[ua_choice]
     respect_robots = st.sidebar.checkbox("Respect robots.txt", value=True)
