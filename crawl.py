@@ -671,7 +671,7 @@ def main():
 
     else:
         st.subheader("Sitemap Mode")
-        st.write("Enter one or multiple sitemap URLs (one per line), then crawl them in chunk mode.")
+        st.write("Enter one or multiple sitemap URLs (one per line)")
         sitemap_text = st.text_area("Sitemap URLs", "")
         if st.button("Fetch & Crawl Sitemaps"):
             if not sitemap_text.strip():
