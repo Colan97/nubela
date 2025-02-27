@@ -130,29 +130,6 @@ def update_redirect_label(data: Dict, original_url: str) -> Dict:
             data["Final_Status_Type"] = f"Status {final_status}"
     return data
 
-def allowed_extension(url: str, allowed_types: set) -> bool:
-    """
-    Checks the URL's path against allowed content types.
-    """
-    parsed = urlparse(url)
-    path = parsed.path.lower()
-    # If no allowed_types are specified, allow all.
-    if not allowed_types:
-        return True
-    # HTML pages: no extension or common HTML endings.
-    if 'html' in allowed_types:
-        if path == "" or path.endswith('/') or path.endswith('.html') or path.endswith('.htm'):
-            return True
-    # Images: common image extensions.
-    if 'images' in allowed_types:
-        if path.endswith(('.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp')):
-            return True
-    # PDFs.
-    if 'pdf' in allowed_types:
-        if path.endswith('.pdf'):
-            return True
-    return False
-
 # -----------------------------
 # URL Checker with Semaphore
 # -----------------------------
@@ -429,7 +406,6 @@ async def dynamic_frontier_crawl(
     checker: URLChecker,
     include_regex: Optional[str],
     exclude_regex: Optional[str],
-    allowed_types: set,
     show_partial_callback=None
 ) -> List[Dict]:
     visited: Set[str] = set()
@@ -463,8 +439,6 @@ async def dynamic_frontier_crawl(
                 continue
             if not regex_filter(norm_link, inc, exc):
                 continue
-            if not allowed_extension(norm_link, allowed_types):
-                continue
             if norm_link not in visited:
                 await frontier.put((depth + 1, norm_link))
     await checker.close()
@@ -488,14 +462,12 @@ async def discover_links(url: str, session: aiohttp.ClientSession, user_agent: s
 # -----------------------------
 # Chunk Mode (No BFS)
 # -----------------------------
-async def chunk_process(urls: List[str], checker: URLChecker, allowed_types: set, show_partial_callback=None) -> List[Dict]:
+async def chunk_process(urls: List[str], checker: URLChecker, show_partial_callback=None) -> List[Dict]:
     results = []
     visited = set()
     final_list = []
     for u in urls:
         nu = normalize_url(u)
-        if not allowed_extension(nu, allowed_types):
-            continue
         if nu and nu not in visited:
             visited.add(nu)
             final_list.append(nu)
@@ -528,20 +500,6 @@ def main():
     ua_choice = st.sidebar.selectbox("User Agent", list(USER_AGENTS.keys()))
     user_agent = USER_AGENTS[ua_choice]
     respect_robots = st.sidebar.checkbox("Respect robots.txt", value=True)
-    
-    # New: Content type selection
-    with st.sidebar.expander("Content Types to Crawl"):
-        crawl_html = st.checkbox("HTML Pages", value=True)
-        crawl_images = st.checkbox("Images", value=False)
-        crawl_pdf = st.checkbox("PDFs", value=False)
-    allowed_types = set()
-    if crawl_html:
-        allowed_types.add("html")
-    if crawl_images:
-        allowed_types.add("images")
-    if crawl_pdf:
-        allowed_types.add("pdf")
-    
     mode = st.radio("Select Mode", ["Dynamic Frontier", "List", "Sitemap"], horizontal=True)
     st.write("----")
 
@@ -574,6 +532,8 @@ def main():
                 st.warning("No seed URL provided.")
                 return
             # Combine the seed URL with sitemap URLs (if any)
+            seeds = [seed_url.strip()] + sitemap_urls
+            # For dynamic frontier, we only use the primary seed (first URL)
             progress_ph = st.empty()
             progress_bar = st.progress(0.0)
             with st.expander("Intermediate Results", expanded=True):
@@ -598,7 +558,6 @@ def main():
                     checker=checker,
                     include_regex=include_pattern,
                     exclude_regex=exclude_pattern,
-                    allowed_types=allowed_types,
                     show_partial_callback=show_partial_data
                 )
             )
@@ -646,7 +605,7 @@ def main():
                     table_ph.dataframe(df_temp, height=500, use_container_width=True)
             checker = URLChecker(user_agent, concurrency, DEFAULT_TIMEOUT, respect_robots)
             results = loop.run_until_complete(
-                chunk_process(user_urls, checker, allowed_types, show_partial_callback=show_partial_data)
+                chunk_process(user_urls, checker, show_partial_callback=show_partial_data)
             )
             loop.close()
             if not results:
@@ -705,7 +664,7 @@ def main():
                     table_ph.dataframe(df_temp, height=500, use_container_width=True)
             checker = URLChecker(user_agent, concurrency, DEFAULT_TIMEOUT, respect_robots)
             results = loop.run_until_complete(
-                chunk_process(all_sitemap_urls, checker, allowed_types, show_partial_callback=show_partial_data)
+                chunk_process(all_sitemap_urls, checker, show_partial_callback=show_partial_data)
             )
             loop.close()
             if not results:
